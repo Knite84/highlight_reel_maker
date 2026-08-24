@@ -1,0 +1,674 @@
+Project Specification: Local AI Media Understanding & Highlight Reel Generator
+
+Objective
+
+Design and build a Windows-first, local-only AI application that transforms folders containing photos and videos into a searchable media knowledge base capable of generating high-quality highlight reels.
+
+The emphasis is not on simply creating highlight videos.
+
+The emphasis is on creating a reusable media understanding pipeline whose outputs can later power many workflows such as:
+
+- Vacation highlight reels
+- Family videos
+- Drone footage
+- GoPro footage
+- Time lapse summaries
+- Home renovation progress videos
+- YouTube rough cuts
+- Searchable media archives
+- Future AI-powered media editing capabilities
+
+The application should be architected as a platform rather than a single-purpose script.
+
+---
+
+Guiding Principles
+
+1. Everything runs locally.
+
+2. User media never leaves the computer.
+
+3. Expensive AI analysis is performed only once.
+
+4. Every subsequent edit should reuse cached knowledge.
+
+5. AI planning should be separated from rendering.
+
+6. Every stage should produce reusable artifacts.
+
+7. The architecture should be modular enough to swap vision models, LLMs, embedding models, or rendering approaches in the future.
+
+---
+
+Primary Technology Stack
+
+UI
+
+Vue 3
+
+Vite
+
+TypeScript
+
+Pinia
+
+TanStack Query
+
+Timeline visualization
+
+Thumbnail browser
+
+Prompt editor
+
+Progress dashboard
+
+---
+
+Backend
+
+Python
+
+FastAPI
+
+Async architecture
+
+REST API
+
+Background job queue
+
+---
+
+Local AI
+
+LM Studio
+
+Use OpenAI-compatible API endpoints.
+
+The application should not depend specifically on LM Studio.
+
+Instead, create an abstraction layer allowing future providers such as Ollama or vLLM.
+
+---
+
+Video Processing
+
+FFmpeg
+
+Responsible for:
+
+- metadata extraction
+- frame extraction
+- scene detection
+- clip trimming
+- transitions
+- rendering
+- final encoding
+
+---
+
+Computer Vision
+
+OpenCV
+
+Responsible for:
+
+- blur detection
+- optical flow
+- camera motion estimation
+- histogram comparison
+- image quality scoring
+- representative frame selection
+
+---
+
+Embeddings
+
+Design abstraction.
+
+Current implementation may use any appropriate local embedding model.
+
+Embeddings should support semantic search later.
+
+---
+
+Project Structure
+
+Each imported media collection becomes a Project.
+
+Example:
+
+Projects/
+
+Yellowstone 2026/
+
+    media/
+
+    cache/
+
+        metadata/
+
+        thumbnails/
+
+        scene_data/
+
+        embeddings/
+
+        ai/
+
+    edits/
+
+    prompts/
+
+    exports/
+
+Nothing should ever require re-analysis unless source media changes.
+
+---
+
+Overall Workflow
+
+User creates Project
+
+↓
+
+Imports media folder
+
+↓
+
+Media scanning
+
+↓
+
+Metadata extraction
+
+↓
+
+Scene detection
+
+↓
+
+Representative frame extraction
+
+↓
+
+Vision analysis
+
+↓
+
+Structured metadata generation
+
+↓
+
+Embedding generation
+
+↓
+
+Knowledge base creation
+
+↓
+
+User prompt
+
+↓
+
+LLM edit planner
+
+↓
+
+Edit plan JSON
+
+↓
+
+FFmpeg renderer
+
+↓
+
+Preview
+
+↓
+
+Revision
+
+↓
+
+Repeat planning only
+
+No AI vision reruns unless media changes.
+
+---
+
+Pipeline
+
+Pass 1
+
+Directory Scan
+
+Collect:
+
+photos
+
+videos
+
+file sizes
+
+checksums
+
+timestamps
+
+GPS
+
+camera model
+
+orientation
+
+duration
+
+resolution
+
+frame rate
+
+codec
+
+---
+
+Pass 2
+
+Scene Detection
+
+Automatically detect scene boundaries.
+
+Use FFmpeg and OpenCV.
+
+The user should never manually define scenes.
+
+Over-segmentation is preferred.
+
+Adjacent segments may later be merged.
+
+---
+
+Pass 3
+
+Representative Frame Selection
+
+Automatically select representative frames from each detected scene.
+
+Store them.
+
+Never regenerate unless source media changes.
+
+---
+
+Pass 4
+
+Low-Level Computer Vision
+
+Generate structured measurements.
+
+Examples:
+
+blur score
+
+sharpness
+
+brightness
+
+contrast
+
+dominant colors
+
+camera movement
+
+subject movement
+
+motion intensity
+
+face count
+
+face size
+
+face visibility
+
+eye visibility
+
+smile probability
+
+head orientation
+
+estimated age group
+
+crowd estimate
+
+animal detection
+
+vehicle detection
+
+text detection (OCR)
+
+water detection
+
+snow detection
+
+mountain detection
+
+beach detection
+
+forest detection
+
+sky visibility
+
+sunrise/sunset estimate
+
+weather estimate
+
+indoor/outdoor
+
+scenic score
+
+composition score
+
+stability score
+
+audio classification
+
+speech present
+
+music present
+
+wind
+
+water
+
+birds
+
+traffic
+
+applause
+
+laughter
+
+estimated excitement
+
+quality score
+
+confidence score
+
+---
+
+Pass 5
+
+Vision Model
+
+Analyze each scene independently.
+
+Do NOT summarize entire videos.
+
+Each detected scene receives:
+
+Natural language description
+
+Objects
+
+Actions
+
+Camera motion
+
+People
+
+Emotion
+
+Scene type
+
+Importance score
+
+Suggested highlight score
+
+Beginning
+
+Middle
+
+Ending
+
+Example:
+
+0.0-8.2
+
+Camera follows two hikers walking uphill through dense pine forest.
+
+8.2-16.4
+
+Camera slowly pans left revealing mountain stream.
+
+16.4-27.8
+
+Static shot focused on flowing stream and surrounding rocks.
+
+Etc.
+
+---
+
+Pass 6
+
+Embeddings
+
+Create semantic embeddings.
+
+Every scene becomes searchable.
+
+Support queries like:
+
+"waterfalls"
+
+"dogs"
+
+"kids laughing"
+
+"sunset"
+
+"boats"
+
+without relying only on keyword matches.
+
+---
+
+Pass 7
+
+Knowledge Base
+
+Persist everything.
+
+Nothing should require another AI vision pass unless media changes.
+
+---
+
+JSON Design
+
+Design robust JSON schemas.
+
+Prefer many objective fields instead of one giant description.
+
+Each scene should include:
+
+timestamps
+
+description
+
+people
+
+actions
+
+camera motion
+
+subject motion
+
+scene type
+
+GPS
+
+quality
+
+highlight score
+
+faces
+
+smiles
+
+detected objects
+
+OCR
+
+audio labels
+
+embedding reference
+
+confidence
+
+plus extensible metadata.
+
+---
+
+Planner
+
+The planner receives:
+
+Entire project metadata
+
+User prompt
+
+Desired duration
+
+Desired pacing
+
+Desired tone
+
+Desired music
+
+Planner returns only JSON.
+
+Never render video.
+
+Planner only plans.
+
+Example:
+
+selected clips
+
+clip timing
+
+transitions
+
+Ken Burns effects
+
+titles
+
+crossfades
+
+music timing
+
+etc.
+
+---
+
+Renderer
+
+Renderer consumes planner JSON.
+
+Renderer uses FFmpeg.
+
+Renderer knows nothing about AI.
+
+Renderer should be deterministic.
+
+---
+
+UI
+
+Modern local web application.
+
+Features:
+
+Project browser
+
+Media browser
+
+Thumbnail grid
+
+Timeline
+
+Prompt editor
+
+Generation history
+
+Analysis progress
+
+Search
+
+Metadata inspector
+
+Preview player
+
+Compare revisions
+
+Edit history
+
+Analysis statistics
+
+Export manager
+
+---
+
+Future Capabilities
+
+Architecture should make these possible later without major redesign:
+
+Speech transcription
+
+Speaker identification
+
+Facial recognition
+
+Object tracking
+
+Relationship graphs
+
+Travel journal generation
+
+Narration generation
+
+Automatic music synchronization
+
+GPS route visualization
+
+Map overlays
+
+Travel statistics
+
+Semantic media search
+
+Duplicate detection
+
+Favorite moment prediction
+
+Social media edits
+
+Long-form documentaries
+
+AI-assisted manual editing
+
+Plugin architecture
+
+Multi-model experimentation
+
+---
+
+Development Philosophy
+
+Favor clean architecture over speed.
+
+Favor reusable pipelines over shortcuts.
+
+Favor structured data over large language summaries.
+
+Every expensive operation should produce artifacts that can be reused forever.
+
+The goal is to build a local AI media understanding platform whose first application is automatic highlight reel generation, but whose architecture is flexible enough to support many future AI-powered media workflows.

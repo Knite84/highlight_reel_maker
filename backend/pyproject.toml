@@ -1,0 +1,52 @@
+[project]
+name = "reelmaker-backend"
+version = "0.1.0"
+description = "Local AI media understanding and highlight reel generator"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "aiosqlite>=0.20",
+    "httpx>=0.27",
+    "xxhash>=3.5",
+    "numpy>=2.0",
+    "pillow>=11.0",
+    "opencv-python-headless>=4.10",
+    "scenedetect>=0.6.5",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "ruff>=0.5",
+]
+ml = [
+    "torch>=2.6",
+    "transformers>=4.53",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"app/pipeline/analyze.py" = ["BLE001"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-m 'not slow'"
+markers = ["slow: long-running integration tests using real models"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
