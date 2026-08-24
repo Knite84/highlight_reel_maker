@@ -100,6 +100,24 @@ def test_process_photo(tmp_path):
     assert len(entry["metrics"]["dominant_colors"]) == 3
 
 
+def test_process_photo_heic(tmp_path):
+    pytest.importorskip("pillow_heif")
+    from PIL import Image
+    from pillow_heif import register_heif_opener
+
+    register_heif_opener()
+    media = tmp_path / "media"
+    media.mkdir()
+    img = Image.new("RGB", (320, 240), (50, 100, 200))
+    photo = media / "iphone_photo.heic"
+    img.save(photo, format="HEIF")
+
+    cache = tmp_path / "cache"
+    entry = process_photo(photo, 0, cache, file_id=11)
+    assert (cache / entry["primary_rel"]).is_file()
+    assert (cache / entry["thumb_rel"]).is_file()
+
+
 @pytest.mark.slow
 def test_analyze_and_search_end_to_end(tmp_path):
     pytest.importorskip("torch")

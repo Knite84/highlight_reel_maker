@@ -15,6 +15,7 @@ dependencies = [
     "pillow>=11.0",
     "opencv-python-headless>=4.10",
     "scenedetect>=0.6.5",
+    "pillow-heif>=0.13",
 ]
 
 [dependency-groups]
@@ -36,6 +37,8 @@ extend-ignore = ["B008"]
 
 [tool.ruff.lint.per-file-ignores]
 "app/pipeline/analyze.py" = ["BLE001"]
+"app/planner/generate.py" = ["DTZ"]
+"app/api/system.py" = ["BLE001"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

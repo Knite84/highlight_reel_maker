@@ -97,8 +97,9 @@ async def _seed_candidates_db(db_path):
     conn = await connect(db_path)
     await migrate_project(conn)
     await conn.execute(
-        "INSERT INTO files(rel_path, kind, size_bytes, mtime, duration_sec) VALUES"
-        " ('v1.mp4','video',10,1,80.0),('v2.mp4','video',20,2,80.0)"
+        "INSERT INTO files(rel_path, kind, size_bytes, mtime, duration_sec, captured_at) VALUES"
+        " ('v1.mp4','video',10,1,80.0,'2026-07-12T10:00:00'),"
+        " ('v2.mp4','video',20,2,80.0,'2026-07-11T09:00:00')"
     )
     for file_id in (1, 2):
         for scene_index in range(5):
@@ -199,9 +200,140 @@ def test_validate_and_fix_plan_drops_and_trims(tmp_path):
             await conn.close()
 
     fixed = asyncio.run(run())
-    assert [clip.rel_path for clip in fixed.clips] == ["v1.mp4"]
-    assert fixed.clips[0].start_sec == 0.0
-    assert fixed.clips[0].end_sec == pytest.approx(8.25)
+    from app.planner.generate import expected_plan_duration
+
+    total = expected_plan_duration(fixed.clips)
+    assert total == pytest.approx(20.0, abs=0.05)
+    paths = [clip.rel_path for clip in fixed.clips]
+    assert set(paths) == {"v1.mp4", "v2.mp4"}
+
+
+def test_validate_keeps_photo_clips(tmp_path):
+    from app.planner.generate import CandidateRef, validate_and_fix_plan
+    from app.planner.schemas import EditPlan
+
+    async def run():
+        conn = await _seed_candidates_db(tmp_path / "db.sqlite")
+        try:
+            refs = [
+                CandidateRef(
+                    scene_id=99,
+                    rel_path="PXL_summit.jpg",
+                    kind="photo",
+                    start_sec=0.0,
+                    end_sec=0.0,
+                    score=0.85,
+                ),
+            ]
+            raw = EditPlan.model_validate(
+                {
+                    "prompt": "p",
+                    "target_duration_sec": 4.0,
+                    "clips": [
+                        {"rel_path": "PXL_summit.jpg", "start_sec": 0.0, "end_sec": 3.5}
+                    ],
+                }
+            )
+            return await validate_and_fix_plan(raw, refs, conn)
+        finally:
+            await conn.close()
+
+    fixed = asyncio.run(run())
+    from app.planner.generate import expected_plan_duration
+
+    total = expected_plan_duration(fixed.clips)
+    assert total == pytest.approx(4.0, abs=0.04)
+    clip = next(c for c in fixed.clips if c.rel_path == "PXL_summit.jpg")
+    assert clip.start_sec == 0.0
+    assert clip.end_sec == pytest.approx(4.0, abs=0.04)
+
+
+def test_validate_sorts_chronologically(tmp_path):
+    from app.planner.generate import CandidateRef, validate_and_fix_plan
+    from app.planner.schemas import EditPlan
+
+    async def run():
+        conn = await _seed_candidates_db(tmp_path / "db.sqlite")
+        try:
+            refs = [
+                CandidateRef(
+                    scene_id=1,
+                    rel_path="v1.mp4",
+                    kind="video",
+                    start_sec=0.0,
+                    end_sec=8.0,
+                    score=0.9,
+                ),
+                CandidateRef(
+                    scene_id=6,
+                    rel_path="v2.mp4",
+                    kind="video",
+                    start_sec=0.0,
+                    end_sec=8.0,
+                    score=0.8,
+                ),
+            ]
+            raw = EditPlan.model_validate(
+                {
+                    "prompt": "p",
+                    "target_duration_sec": 10.0,
+                    "clips": [
+                        {"rel_path": "v1.mp4", "start_sec": 0.0, "end_sec": 4.0},
+                        {"rel_path": "v2.mp4", "start_sec": 0.0, "end_sec": 4.0},
+                    ],
+                }
+            )
+            return await validate_and_fix_plan(raw, refs, conn)
+        finally:
+            await conn.close()
+
+    fixed = asyncio.run(run())
+    assert [clip.rel_path for clip in fixed.clips] == ["v2.mp4", "v1.mp4"]
+
+
+def test_validate_appends_filler_to_reach_target(tmp_path):
+    from app.planner.generate import CandidateRef, validate_and_fix_plan
+    from app.planner.schemas import EditPlan
+
+    async def run():
+        conn = await _seed_candidates_db(tmp_path / "db.sqlite")
+        try:
+            refs = [
+                CandidateRef(
+                    scene_id=1,
+                    rel_path="v1.mp4",
+                    kind="video",
+                    start_sec=0.0,
+                    end_sec=8.0,
+                    score=0.9,
+                ),
+                CandidateRef(
+                    scene_id=6,
+                    rel_path="v2.mp4",
+                    kind="video",
+                    start_sec=10.0,
+                    end_sec=30.0,
+                    score=0.7,
+                ),
+            ]
+            raw = EditPlan.model_validate(
+                {
+                    "prompt": "p",
+                    "target_duration_sec": 30.0,
+                    "clips": [{"rel_path": "v1.mp4", "start_sec": 0.0, "end_sec": 6.0}],
+                }
+            )
+            return await validate_and_fix_plan(raw, refs, conn)
+        finally:
+            await conn.close()
+
+    fixed = asyncio.run(run())
+    from app.planner.generate import expected_plan_duration
+
+    total = expected_plan_duration(fixed.clips)
+    assert total == pytest.approx(30.0, abs=0.05)
+    paths = [clip.rel_path for clip in fixed.clips]
+    assert set(paths) == {"v1.mp4", "v2.mp4"}
 
 
 def test_validate_extends_toward_target(tmp_path):
@@ -233,6 +365,42 @@ def test_validate_extends_toward_target(tmp_path):
             await conn.close()
 
     fixed = asyncio.run(run())
+    paths = [clip.rel_path for clip in fixed.clips]
+    assert set(paths) == {"v1.mp4"}
     total = sum(c.end_sec - c.start_sec for c in fixed.clips)
-    assert total >= 30.0 * 0.85
+    assert 30.0 * 0.5 <= total <= 30.0 * 1.12 + 0.01
+
+
+def test_shrink_caps_overshoot(tmp_path):
+    from app.planner.generate import CandidateRef, validate_and_fix_plan
+    from app.planner.schemas import EditPlan
+
+    async def run():
+        conn = await _seed_candidates_db(tmp_path / "db.sqlite")
+        try:
+            refs = [
+                CandidateRef(
+                    scene_id=1,
+                    rel_path="v1.mp4",
+                    kind="video",
+                    start_sec=0.0,
+                    end_sec=40.0,
+                    score=0.95,
+                ),
+            ]
+            raw = EditPlan.model_validate(
+                {
+                    "prompt": "p",
+                    "target_duration_sec": 10.0,
+                    "clips": [{"rel_path": "v1.mp4", "start_sec": 0.0, "end_sec": 20.0}],
+                }
+            )
+            return await validate_and_fix_plan(raw, refs, conn)
+        finally:
+            await conn.close()
+
+    fixed = asyncio.run(run())
+    total = sum(c.end_sec - c.start_sec for c in fixed.clips)
+    assert total <= 10.0 * 1.12 + 0.01
+    assert total >= 10.0 * 0.5
     assert all(c.end_sec <= 40.25 for c in fixed.clips)

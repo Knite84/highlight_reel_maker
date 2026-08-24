@@ -63,15 +63,31 @@ const passiveJob = computed(() => {
 
 const displayedJob = computed(() => job.value ?? passiveJob.value ?? polledJob.value)
 
+const activePlanJob = computed(() => {
+  const current = displayedJob.value
+  return current && current.kind === 'plan' && current.status !== 'done' && current.status !== 'failed'
+    ? current
+    : null
+})
+
 const waitingForPlanner = computed(
   () =>
     activeJobId.value !== null &&
-    job.value === null &&
-    passiveJob.value === null &&
+    activePlanJob.value === null &&
     (polledJob.value === null ||
       polledJob.value.status === 'queued' ||
-      polledJob.value.status === 'running'),
+      polledJob.value.status === 'running') &&
+    (job.value === null || job.value.kind === 'plan'),
 )
+
+const planningPercent = computed(() => {
+  const current = activePlanJob.value
+  if (!current) return null
+  if (current.total && current.total > 0) {
+    return Math.min(100, Math.round((current.done / current.total) * 100))
+  }
+  return Math.round(current.progress * 100)
+})
 
 const polledJob = ref<Job | null>(null)
 let pollTimer: number | null = null
@@ -134,14 +150,6 @@ watch(displayedJob, (current, previous) => {
 })
 
 const finished = computed(() => job.value?.status === 'done')
-const percent = computed(() => {
-  const current = displayedJob.value
-  if (!current) return 0
-  if (current.total && current.total > 0) {
-    return Math.min(100, Math.round((current.done / current.total) * 100))
-  }
-  return Math.round(current.progress * 100)
-})
 
 watch(finished, async (isDone, wasDone) => {
   if (isDone && !wasDone) {
@@ -196,6 +204,8 @@ async function generatePlan() {
 const plansQuery = useQuery({
   queryKey: ['plans', projectId],
   queryFn: () => api.get<ReelPlan[]>(`/projects/${projectId}/plans`),
+  refetchInterval: (query) =>
+    (query.state.data ?? []).some((reel) => reel.status === 'rendering') ? 4000 : false,
 })
 
 const expandedId = ref<number | null>(null)
@@ -210,11 +220,13 @@ function toggleExpanded(id: number) {
   expandedId.value = expandedId.value === id ? null : id
 }
 
+const showFiles = ref(false)
 const reelList = computed(() => plansQuery.data.value ?? [])
 const activePlanDetail = computed(() => planDetailQuery.data.value ?? null)
 
 async function renderPlan(id: number) {
   actionError.value = ''
+  renderingReelId.value = id
   try {
     const result = await api.post<{ job_id: number }>(
       `/projects/${projectId}/plans/${id}/render`,
@@ -222,9 +234,54 @@ async function renderPlan(id: number) {
     )
     activeJobId.value = result.job_id
   } catch (e) {
+    renderingReelId.value = null
     actionError.value = e instanceof Error ? e.message : String(e)
   }
 }
+
+const renderingReelId = ref<number | null>(null)
+
+const activeRenderJob = computed(() => {
+  const current = displayedJob.value
+  return current && current.kind === 'render' ? current : null
+})
+
+const renderInProgress = computed(
+  () =>
+    activeRenderJob.value !== null &&
+    activeRenderJob.value.status !== 'done' &&
+    activeRenderJob.value.status !== 'failed' &&
+    activeRenderJob.value.status !== 'cancelled',
+)
+
+const renderPercent = computed(() => {
+  const current = activeRenderJob.value
+  if (!current) return 0
+  if (current.total && current.total > 0) {
+    return Math.min(100, Math.round((current.done / current.total) * 100))
+  }
+  return Math.round(current.progress * 100)
+})
+
+watch(renderInProgress, (active, wasActive) => {
+  if (!active && wasActive && activeRenderJob.value?.status === 'done') {
+    renderingReelId.value = null
+  }
+})
+
+const topJob = computed(() => {
+  const current = displayedJob.value
+  return current && (current.kind === 'scan' || current.kind === 'analyze') ? current : null
+})
+
+const topPercent = computed(() => {
+  const current = topJob.value
+  if (!current) return 0
+  if (current.total && current.total > 0) {
+    return Math.min(100, Math.round((current.done / current.total) * 100))
+  }
+  return Math.round(current.progress * 100)
+})
 
 async function refreshStatus() {
   try {
@@ -295,15 +352,15 @@ const fileList = computed(() => filesQuery.data.value ?? [])
       <button class="ghost" @click="refreshStatus">Refresh</button>
     </div>
 
-    <div v-if="displayedJob" class="card progress">
+    <div v-if="topJob" class="card progress">
       <div class="progress-head">
-        <span>{{ displayedJob.kind }} {{ displayedJob.status }}</span>
-        <span>{{ displayedJob.done }}/{{ displayedJob.total ?? '?' }}</span>
+        <span>{{ topJob.kind }} {{ topJob.status }}</span>
+        <span>{{ topJob.done }}/{{ topJob.total ?? '?' }}</span>
       </div>
-      <div class="bar"><div class="bar-fill" :style="{ width: percent + '%' }" /></div>
-      <p class="muted">{{ displayedJob.message }}</p>
-      <p v-if="displayedJob.error" class="error" :title="displayedJob.error">
-        {{ displayedJob.error.slice(0, 300) }}{{ (displayedJob.error.length ?? 0) > 300 ? '…' : '' }}
+      <div class="bar"><div class="bar-fill" :style="{ width: topPercent + '%' }" /></div>
+      <p class="muted">{{ topJob.message }}</p>
+      <p v-if="topJob.error" class="error" :title="topJob.error">
+        {{ topJob.error.slice(0, 300) }}{{ (topJob.error.length ?? 0) > 300 ? '…' : '' }}
       </p>
     </div>
 
@@ -368,7 +425,7 @@ const fileList = computed(() => filesQuery.data.value ?? [])
         placeholder="Describe your reel… e.g. 'Chill sunset montage with the best scenery'"
       />
       <label class="muted duration-label">
-        Target seconds
+        Length (seconds)
         <input v-model.number="targetDuration" type="number" min="10" max="600" />
       </label>
       <button
@@ -377,8 +434,27 @@ const fileList = computed(() => filesQuery.data.value ?? [])
       >
         {{ generating ? 'Sending…' : 'Generate plan' }}
       </button>
-      <p v-if="waitingForPlanner" class="muted">
-        Planning… your GPU is thinking (typically 15–60 seconds).
+      <div
+        v-if="waitingForPlanner || activePlanJob"
+        class="inline-progress"
+      >
+        <div class="progress-head">
+          <span>{{
+            waitingForPlanner && !activePlanJob
+              ? 'Contacting planner…'
+              : `Planning ${activePlanJob?.status}`
+          }}</span>
+          <span v-if="planningPercent !== null">{{ planningPercent }}%</span>
+        </div>
+        <div class="bar">
+          <div class="bar-fill" :style="{ width: (planningPercent ?? 8) + '%' }" />
+        </div>
+        <p v-if="activePlanJob?.error" class="error" :title="activePlanJob.error">
+          {{ activePlanJob.error.slice(0, 250) }}
+        </p>
+      </div>
+      <p v-else-if="waitingForPlanner" class="muted">
+        Planning… your GPU is thinking.
       </p>
     </div>
 
@@ -402,10 +478,10 @@ const fileList = computed(() => filesQuery.data.value ?? [])
         <p v-if="reel.error" class="error">{{ reel.error }}</p>
         <div class="actions">
           <button
-            :disabled="reel.status === 'rendering'"
+            :disabled="reel.status === 'rendering' || (renderInProgress && renderingReelId === reel.id)"
             @click="renderPlan(reel.id)"
           >
-            Render (proxy)
+            {{ renderInProgress && renderingReelId === reel.id ? 'Rendering…' : 'Render (proxy)' }}
           </button>
           <a
             v-if="reel.status === 'rendered'"
@@ -415,6 +491,22 @@ const fileList = computed(() => filesQuery.data.value ?? [])
             Download MP4
           </a>
         </div>
+        <div
+          v-if="renderInProgress && renderingReelId === reel.id && activeRenderJob"
+          class="inline-progress"
+        >
+          <div class="progress-head">
+            <span>Rendering proxy…</span>
+            <span>{{ renderPercent }}%</span>
+          </div>
+          <div class="bar"><div class="bar-fill" :style="{ width: renderPercent + '%' }" /></div>
+          <p v-if="activeRenderJob.error" class="error" :title="activeRenderJob.error">
+            {{ activeRenderJob.error.slice(0, 200) }}{{ (activeRenderJob.error.length ?? 0) > 200 ? '…' : '' }}
+          </p>
+        </div>
+        <p v-else-if="reel.status === 'rendering'" class="muted pulse">
+          Render in progress… this card updates automatically.
+        </p>
         <div v-if="expandedId === reel.id && activePlanDetail" class="plan-detail">
           <PlanPreview
             v-if="activePlanDetail.plan"
@@ -437,14 +529,19 @@ const fileList = computed(() => filesQuery.data.value ?? [])
       </article>
     </div>
 
-    <h2>Media files <span class="muted">({{ project.files_total }})</span></h2>
-    <div class="grid">
-      <article v-for="file in fileList" :key="file.id" class="card file-card">
-        <span class="badge" :class="file.kind">{{ file.kind.toUpperCase() }}</span>
-        <p class="file-name">{{ file.rel_path }}</p>
-        <p class="muted">{{ file.scene_count ?? 0 }} scenes</p>
-      </article>
-    </div>
+    <h2 class="collapsible" @click="showFiles = !showFiles">
+      {{ showFiles ? '▾' : '▸' }} Media files
+      <span class="muted">({{ project.files_total }})</span>
+    </h2>
+    <template v-if="showFiles">
+      <div class="grid">
+        <article v-for="file in fileList" :key="file.id" class="card file-card">
+          <span class="badge" :class="file.kind">{{ file.kind.toUpperCase() }}</span>
+          <p class="file-name">{{ file.rel_path }}</p>
+          <p class="muted">{{ file.scene_count ?? 0 }} scenes</p>
+        </article>
+      </div>
+    </template>
   </section>
   <p v-else class="muted">Loading project…</p>
 </template>

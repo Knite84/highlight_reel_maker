@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useQuery } from '@tanstack/vue-query'
 import { ref } from 'vue'
-import { RouterLink, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { api, ApiError } from '@/api/client'
 import type { Project } from '@/api/types'
 
@@ -16,6 +16,20 @@ const name = ref('')
 const mediaPath = ref('')
 const error = ref('')
 const busy = ref(false)
+const browsing = ref(false)
+
+async function browseFolder() {
+  browsing.value = true
+  try {
+    const result = await api.post<{ path: string | null; error?: string }>('/system/pick-folder')
+    if (result.path) mediaPath.value = result.path
+    else if (result.error) error.value = result.error
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    browsing.value = false
+  }
+}
 
 async function createProject() {
   busy.value = true
@@ -48,17 +62,27 @@ async function removeProject(id: number) {
     <h1>Projects</h1>
     <form class="card form" @submit.prevent="createProject">
       <input v-model="name" placeholder="Project name" required />
-      <input v-model="mediaPath" placeholder="Absolute path to media folder" required />
+      <input v-model="mediaPath" placeholder="Path to your media folder" required />
+      <button type="button" class="ghost" :disabled="browsing" @click="browseFolder">
+        {{ browsing ? 'Browsing…' : 'Browse…' }}
+      </button>
       <button type="submit" :disabled="busy || !name || !mediaPath">Create project</button>
       <p v-if="error" class="error">{{ error }}</p>
     </form>
 
     <div class="grid">
-      <article v-for="project in projects ?? []" :key="project.id" class="card project-card">
-        <h2><RouterLink :to="`/projects/${project.id}`">{{ project.name }}</RouterLink></h2>
+      <article
+        v-for="project in projects ?? []"
+        :key="project.id"
+        class="card project-card clickable"
+        @click="router.push(`/projects/${project.id}`)"
+      >
+        <h2>{{ project.name }}</h2>
         <p class="muted file-name">{{ project.media_path }}</p>
-        <p class="muted">{{ project.video_count }} videos &middot; {{ project.photo_count }} photos</p>
-        <button class="danger" @click="removeProject(project.id)">Delete</button>
+        <div class="card-footer">
+          <span class="muted">{{ project.video_count }} videos &middot; {{ project.photo_count }} photos</span>
+          <button class="danger" @click.stop="removeProject(project.id)">Delete</button>
+        </div>
       </article>
     </div>
 

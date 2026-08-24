@@ -70,6 +70,14 @@ def probe_media_sync(path: Path) -> dict:
     if video is None:
         raise RuntimeError("no video stream found")
     fmt = data.get("format", {})
+    has_audio = any(s.get("codec_type") == "audio" for s in streams)
+    color_transfer = (video.get("color_transfer") or "").lower()
+    side_data_text = json.dumps(video.get("side_data_list") or []).lower()
+    is_hdr = (
+        color_transfer in {"smpte2084", "arib-std-b67", "hlg"}
+        or "smpte2084" in side_data_text
+        or "arib-std-b67" in side_data_text
+    )
     duration = None
     for candidate in (video.get("duration"), fmt.get("duration")):
         try:
@@ -97,6 +105,8 @@ def probe_media_sync(path: Path) -> dict:
         "gps_lon": None,
         "captured_at": None,
         "rotation": rotation,
+        "has_audio": has_audio,
+        "is_hdr": is_hdr,
     }
 
 

@@ -148,11 +148,32 @@ def process_video(
     return results
 
 
-def process_photo(path: Path, rotation: int, cache_dir: Path, file_id: int) -> dict:
+def _load_image_bgr(path: Path) -> tuple["np.ndarray", bool]:
     img = cv2.imread(str(path), cv2.IMREAD_COLOR)
-    if img is None:
-        raise ValueError(f"unsupported or unreadable image format: {path.suffix}")
-    img = _apply_rotation(img, rotation)
+    if img is not None:
+        return img, False
+    try:
+        from pillow_heif import register_heif_opener
+    except ImportError as exc:
+        raise ValueError(
+            f"unreadable image format {path.suffix} (install pillow-heif for HEIC support)"
+        ) from exc
+    from PIL import Image, ImageOps
+
+    register_heif_opener()
+    with Image.open(path) as pil_img:
+        transposed = ImageOps.exif_transpose(pil_img)
+        rgb = transposed.convert("RGB")
+    bgr = cv2.cvtColor(np.asarray(rgb), cv2.COLOR_RGB2BGR)
+    if bgr is None or bgr.size == 0:
+        raise ValueError(f"failed to decode image: {path.name}")
+    return bgr, True
+
+
+def process_photo(path: Path, rotation: int, cache_dir: Path, file_id: int) -> dict:
+    img, already_transposed = _load_image_bgr(path)
+    if not already_transposed:
+        img = _apply_rotation(img, rotation)
     resized = _resize_max(img, MAX_SIDE)
     rel = f"frames/{file_id}/s0_primary.jpg"
     thumb_rel = f"thumbs/{file_id}/s0.jpg"

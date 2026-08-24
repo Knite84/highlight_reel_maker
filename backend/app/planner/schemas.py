@@ -52,6 +52,13 @@ class PlannedClip(BaseModel):
     transition_duration_sec: float = Field(default=0.5, gt=0, le=2.0)
     ken_burns: KenBurns | None = None
     reason: str = ""
+    freeze_tail_sec: float = Field(default=0.0, ge=0)
+
+    @field_validator("freeze_tail_sec", mode="before")
+    @classmethod
+    def _sanitize_freeze(cls, value: Any) -> Any:
+        number = _coerce_finite(value)
+        return max(0.0, number) if number is not None else 0.0
 
     @field_validator("transition_in", mode="before")
     @classmethod

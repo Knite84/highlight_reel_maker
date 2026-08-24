@@ -124,6 +124,29 @@ async def refresh(settings: Settings = Depends(get_settings_dep)) -> dict[str, A
     return _CACHE
 
 
+@router.post("/pick-folder")
+async def pick_folder() -> dict[str, Any]:
+    def _dialog() -> str | None:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        root.update()
+        try:
+            path = filedialog.askdirectory(parent=root, title="Choose your media folder")
+        finally:
+            root.destroy()
+        return path or None
+
+    try:
+        path = await asyncio.to_thread(_dialog)
+    except Exception as exc:
+        return {"path": None, "error": str(exc)}
+    return {"path": path}
+
+
 @router.get("/config")
 async def config(settings: Settings = Depends(get_settings_dep)) -> dict[str, Any]:
     return {

@@ -71,6 +71,15 @@ h2 {
   margin: 28px 0 12px;
 }
 
+h2.collapsible {
+  cursor: pointer;
+  user-select: none;
+}
+
+h2.collapsible:hover {
+  color: var(--accent);
+}
+
 .card {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -155,6 +164,22 @@ button.ghost {
   text-decoration: none;
 }
 
+.project-card.clickable {
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.project-card.clickable:hover {
+  border-color: var(--accent);
+}
+
+.card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
 .page-head {
   display: flex;
   justify-content: space-between;
@@ -199,6 +224,24 @@ button.ghost {
 
 .progress {
   margin: 16px 0;
+}
+
+.inline-progress {
+  margin-top: 4px;
+}
+
+.pulse {
+  animation: pulse-opacity 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse-opacity {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
 }
 
 .progress-head {

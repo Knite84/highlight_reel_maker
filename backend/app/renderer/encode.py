@@ -2,7 +2,7 @@ import asyncio
 import shutil
 
 CANVASES = {"proxy": (1280, 720), "final": (1920, 1080)}
-BITRATES = {"proxy": "3M", "final": "10M"}
+BITRATES = {"proxy": "8M", "final": "20M"}
 VALID_PROFILES = tuple(CANVASES)
 
 
@@ -30,10 +30,10 @@ async def resolve_encoder(profile: str) -> tuple[str, list[str]]:
     bitrate = BITRATES[profile]
     if has_nvenc:
         encoder = "h264_nvenc"
-        flags = ["-b:v", bitrate, "-rc", "vbr", "-cq", "27", "-preset", "p4"]
+        flags = ["-b:v", bitrate, "-rc", "vbr", "-cq", "22", "-preset", "p5"]
     else:
         encoder = "libx264"
-        flags = ["-b:v", bitrate, "-preset", "veryfast", "-crf", "21"]
+        flags = ["-b:v", bitrate, "-preset", "medium", "-crf", "19"]
     return encoder, flags
 
 

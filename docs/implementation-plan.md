@@ -1,5 +1,9 @@
 # Implementation Plan — Local AI Media Understanding & Highlight Reel Generator
 
+> **STATUS (Aug 2026):** Phases 0–2 complete; Phase 3 in progress with deviations from this
+> original document (Docker dropped, exact-duration contract, libplacebo HDR, Unsloth Desktop
+> integration). See [`status.md`](status.md) for the authoritative current-state handoff.
+
 *Draft v1 · Aug 2026 · Windows-first, fully local*
 
 ## Locked Decisions

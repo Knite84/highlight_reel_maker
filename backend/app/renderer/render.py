@@ -1,5 +1,6 @@
 import asyncio
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,19 @@ def _write_title_textfile(export_dir: Path, edit_id: int, plan: EditPlan) -> Pat
         lines.append(plan.title.subtitle)
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
+
+
+async def _mark_edit_failed(db_path: Path, edit_id: int, message: str) -> None:
+    conn = await connect(db_path)
+    try:
+        await conn.execute(
+            "UPDATE edits SET status='failed', error=?, "
+            "rendered_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?",
+            (message[:500], edit_id),
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
 
 
 async def render_job_handler(ctx: Any, payload: dict) -> dict:
@@ -54,9 +68,15 @@ async def render_job_handler(ctx: Any, payload: dict) -> dict:
         raise RuntimeError(f"source files missing: {sorted(set(missing))[:3]}")
 
     sources: dict[str, Path] = {}
+    no_audio_rels: set[str] = set(image_rels)
+    hdr_rels: set[str] = set()
     for rel_path in sorted({clip.rel_path for clip in plan.clips}):
         source_path = media_root / rel_path
-        await asyncio.to_thread(probe_media_sync, source_path)
+        meta = await asyncio.to_thread(probe_media_sync, source_path)
+        if not meta.get("has_audio"):
+            no_audio_rels.add(rel_path)
+        if meta.get("is_hdr"):
+            hdr_rels.add(rel_path)
         sources[rel_path] = source_path
 
     encoder, flags = await resolve_encoder(profile)
@@ -64,17 +84,54 @@ async def render_job_handler(ctx: Any, payload: dict) -> dict:
     title_textfile_abs = _write_title_textfile(export_dir, edit_id, plan)
     title_textfile = title_textfile_abs.name if title_textfile_abs else None
     output_path = export_dir / f"edit_{edit_id}_{profile}.mp4"
-    args, total_seconds = build_render_args(
-        plan,
-        sources,
-        canvas_w=canvas_w,
-        canvas_h=canvas_h,
-        encoder=encoder,
-        encoder_flags=flags,
-        output_path=output_path,
-        title_textfile=title_textfile,
-        image_rels=image_rels,
-    )
+
+    engines = ["libplacebo", "zscale"] if hdr_rels else ["libplacebo"]
+    args: list[str] = []
+    total_seconds = 0.0
+    stderr_probe = ""
+    for engine in engines:
+        args, total_seconds = build_render_args(
+            plan,
+            sources,
+            canvas_w=canvas_w,
+            canvas_h=canvas_h,
+            encoder=encoder,
+            encoder_flags=flags,
+            output_path=output_path,
+            title_textfile=title_textfile,
+            image_rels=image_rels,
+            no_audio_rels=no_audio_rels,
+            hdr_rels=hdr_rels,
+            hdr_engine=engine,
+        )
+        probe = await asyncio.to_thread(
+            subprocess.run,
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                *args[1 : args.index("-y")],
+                "-f",
+                "lavfi",
+                "-i",
+                "color=black:s=64x64:d=0.1",
+                "-frames:v",
+                "1",
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if probe.returncode == 0:
+            break
+        stderr_probe = probe.stderr[:300]
+    else:
+        raise RuntimeError(
+            f"no working HDR engine; libplacebo error: {stderr_probe}"
+        )
 
     await ctx.progress(done=0, total=max(int(total_seconds), 1), message="Rendering", force=True)
     proc = await asyncio.create_subprocess_exec(
@@ -99,7 +156,12 @@ async def render_job_handler(ctx: Any, payload: dict) -> dict:
     stderr_tail = ""
     progress_task = asyncio.create_task(_pump_progress())
     try:
-        return_code = await proc.wait()
+        try:
+            return_code = await asyncio.wait_for(proc.wait(), timeout=1800.0)
+        except TimeoutError:
+            proc.kill()
+            return_code = await proc.wait()
+            raise RuntimeError("ffmpeg timed out after 30 minutes")
         await progress_task
         if proc.stderr is not None:
             raw_stderr = await proc.stderr.read()
@@ -108,6 +170,10 @@ async def render_job_handler(ctx: Any, payload: dict) -> dict:
             raise RuntimeError(f"ffmpeg failed ({return_code}): {stderr_tail}")
     except asyncio.CancelledError:
         proc.kill()
+        await _mark_edit_failed(db_path, edit_id, "render cancelled")
+        raise
+    except Exception as exc:
+        await _mark_edit_failed(db_path, edit_id, str(exc))
         raise
 
     if not output_path.is_file():
