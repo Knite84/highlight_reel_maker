@@ -67,6 +67,8 @@ export interface ReelPlan {
   render_path: string | null
   error: string | null
   created_at: string
+  rendered_duration_sec?: number | null
+  downloaded_at?: string | null
 }
 
 export interface ReelPlanDetail extends ReelPlan {

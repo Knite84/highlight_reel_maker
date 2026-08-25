@@ -18,7 +18,10 @@ from .deps import get_registry, get_runner, get_settings_dep, project_or_404
 
 router = APIRouter(prefix="/projects/{project_id}/plans", tags=["plans"])
 
-EDIT_COLUMNS = "id, prompt, target_duration_sec, status, model_id, render_path, error, created_at"
+EDIT_COLUMNS = (
+    "id, prompt, target_duration_sec, status, model_id, render_path, error, created_at, "
+    "rendered_duration_sec, downloaded_at"
+)
 
 
 class PlanCreate(BaseModel):
@@ -205,4 +208,13 @@ async def download_render(edit_id: int, project_id: int, registry=Depends(get_re
     render_path = row.get("render_path")
     if row["status"] != "rendered" or not render_path or not Path(render_path).is_file():
         raise HTTPException(status_code=404, detail="Render not available yet")
+    conn = await coredb.connect(db_path)
+    try:
+        await conn.execute(
+            "UPDATE edits SET downloaded_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?",
+            (edit_id,),
+        )
+        await conn.commit()
+    finally:
+        await conn.close()
     return FileResponse(Path(render_path), media_type="video/mp4", filename=f"reel_{edit_id}.mp4")

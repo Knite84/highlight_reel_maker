@@ -172,6 +172,121 @@ def test_static_photo_renders_full_duration(tmp_path):
     assert float(video["duration"]) >= total * 0.9
 
 
+def _photo_plan(rel_path: str = "pic.jpg") -> EditPlan:
+    return EditPlan.model_validate(
+        {
+            "prompt": "t",
+            "target_duration_sec": 3.0,
+            "clips": [
+                {
+                    "rel_path": rel_path,
+                    "start_sec": 0.0,
+                    "end_sec": 3.0,
+                    "transition_in": "cut",
+                    "ken_burns": {"direction": "zoom_in", "intensity": 0.08},
+                }
+            ],
+        }
+    )
+
+
+def _image_chain(graph: str) -> str:
+    return next(line for line in graph.split(";") if line.startswith("[0:v]"))
+
+
+def test_photo_rotation_adds_transpose():
+    graph, _total = build_filtergraph(
+        _photo_plan(),
+        canvas_w=256,
+        canvas_h=144,
+        maps=_simple_maps(1),
+        image_rels={"pic.jpg"},
+        photo_rotations={"pic.jpg": 90},
+    )
+    chain = _image_chain(graph)
+    transpose_pos = chain.index("transpose=1")
+    scale_pos = chain.index("scale=")
+    assert transpose_pos < scale_pos
+    assert "crop=1024:576" in chain
+
+
+def test_photo_rotation_270_uses_transpose_2():
+    graph, _total = build_filtergraph(
+        _photo_plan(),
+        canvas_w=256,
+        canvas_h=144,
+        maps=_simple_maps(1),
+        image_rels={"pic.jpg"},
+        photo_rotations={"pic.jpg": 270},
+    )
+    chain = _image_chain(graph)
+    assert chain.startswith("[0:v]transpose=2,scale=")
+
+
+def test_photo_rotation_180_double_transpose():
+    graph, _total = build_filtergraph(
+        _photo_plan(),
+        canvas_w=256,
+        canvas_h=144,
+        maps=_simple_maps(1),
+        image_rels={"pic.jpg"},
+        photo_rotations={"pic.jpg": 180},
+    )
+    assert "transpose=1,transpose=1" in _image_chain(graph)
+
+
+def test_photo_focus_crop_expression():
+    graph, _total = build_filtergraph(
+        _photo_plan(),
+        canvas_w=256,
+        canvas_h=144,
+        maps=_simple_maps(1),
+        image_rels={"pic.jpg"},
+        photo_focus={"pic.jpg": (0.5, 0.4)},
+    )
+    chain = _image_chain(graph)
+    assert "crop=1024:576:x='clip(0.5000*iw-ow/2,0,iw-ow)'" in chain
+    assert ":y='clip(0.4000*ih-oh/2,0,ih-oh)'" in chain
+
+
+def test_photo_default_center_crop_without_hint():
+    graph, _total = build_filtergraph(
+        _photo_plan(),
+        canvas_w=256,
+        canvas_h=144,
+        maps=_simple_maps(1),
+        image_rels={"pic.jpg"},
+    )
+    chain = _image_chain(graph)
+    assert "[0:v]scale=1024:576:force_original_aspect_ratio=increase,crop=1024:576," in chain
+    assert "clip(" not in chain
+
+
+@needs_ffmpeg
+def test_portrait_photo_with_rotation_and_focus_parses_and_renders(tmp_path):
+    from PIL import Image
+
+    photo = tmp_path / "p.jpg"
+    Image.new("RGB", (720, 1280), (10, 120, 200)).save(photo)
+    out = tmp_path / "out.mp4"
+    args, total = build_render_args(
+        _photo_plan("p.jpg"),
+        {"p.jpg": photo},
+        canvas_w=256,
+        canvas_h=144,
+        encoder="libx264",
+        encoder_flags=["-preset", "ultrafast"],
+        output_path=out,
+        image_rels={"p.jpg"},
+        no_audio_rels={"p.jpg"},
+        photo_rotations={"p.jpg": 90},
+        photo_focus={"p.jpg": (0.5, 0.4)},
+    )
+    subprocess.run(args, check=True, capture_output=True, cwd=str(tmp_path))
+    assert out.is_file()
+    assert total == pytest.approx(3.0)
+
+
 def test_freeze_tail_adds_tpad_and_audio_pad():
     plan = EditPlan.model_validate(
         {

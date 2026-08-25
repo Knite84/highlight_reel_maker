@@ -195,6 +195,15 @@ button.ghost {
   margin: 16px 0;
 }
 
+.status-inline {
+  margin: 4px 0 12px;
+}
+
+.refresh-link {
+  font-size: 12px;
+  padding: 2px 6px;
+}
+
 .pill {
   display: inline-flex;
   align-items: center;
@@ -220,6 +229,11 @@ button.ghost {
 
 .pill-bad .dot {
   background: var(--bad);
+}
+
+.pill-compact {
+  padding: 4px 6px;
+  gap: 0;
 }
 
 .progress {
@@ -353,16 +367,99 @@ button.ghost {
   padding: 6px 10px;
 }
 
-.reel-list {
+.reel-grid {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 4px;
 }
 
-.reel-card {
+.reel-head,
+.reel-row {
+  display: grid;
+  grid-template-columns: 72px 108px 64px 110px minmax(160px, 1fr) minmax(110px, 170px) 36px;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 12px;
+}
+
+.reel-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  padding-bottom: 2px;
+}
+
+.reel-row {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.reel-row.unread {
+  border-left: 3px solid var(--accent);
+}
+
+.reel-row.unread .reel-desc {
+  font-weight: 600;
+}
+
+.reel-row.read {
+  opacity: 0.72;
+}
+
+.reel-expand {
+  justify-self: start;
+  padding: 4px 6px;
+}
+
+.reel-render {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
+}
+
+.reel-render button {
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
+.reel-desc,
+.reel-model {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reel-model {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.reel-created {
+  font-size: 12px;
+}
+
+.reel-nodl {
+  text-align: center;
+}
+
+.bar.slim {
+  height: 4px;
+}
+
+.reel-pulse {
+  margin: 0;
+  padding: 2px 12px;
+  font-size: 13px;
+}
+
+.reel-detail {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-top: 2px;
 }
 
 .badge.planned {
@@ -383,14 +480,10 @@ button.ghost {
 
 .download-link {
   color: var(--accent);
-  font-size: 14px;
+  font-size: 16px;
+  text-align: center;
   text-decoration: none;
-  padding: 9px 0;
-}
-
-.plan-detail {
-  border-top: 1px solid var(--border);
-  padding-top: 12px;
+  padding: 6px 0;
 }
 
 .clip-list {

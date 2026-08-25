@@ -9,6 +9,7 @@ from ..pipeline.metadata import probe_media_sync
 from ..planner.schemas import EditPlan
 from .encode import canvas_for, resolve_encoder
 from .filtergraph import build_render_args
+from .photo_crop import compute_focus_points
 
 
 def _write_title_textfile(export_dir: Path, edit_id: int, plan: EditPlan) -> Path | None:
@@ -51,8 +52,12 @@ async def render_job_handler(ctx: Any, payload: dict) -> dict:
         row = await cur.fetchone()
         if row is None:
             raise RuntimeError(f"edit {edit_id} not found")
-        cur = await conn.execute("SELECT rel_path, kind FROM files WHERE kind = 'photo'")
-        image_rels = frozenset(r["rel_path"] for r in await cur.fetchall())
+        cur = await conn.execute(
+            "SELECT rel_path, COALESCE(rotation, 0) AS rotation FROM files WHERE kind = 'photo'"
+        )
+        photo_rows = await cur.fetchall()
+        image_rels = frozenset(r["rel_path"] for r in photo_rows)
+        photo_rotations = {r["rel_path"]: int(r["rotation"]) for r in photo_rows}
         await conn.execute(
             "UPDATE edits SET status='rendering', error=NULL WHERE id = ?", (edit_id,)
         )
@@ -79,6 +84,15 @@ async def render_job_handler(ctx: Any, payload: dict) -> dict:
             hdr_rels.add(rel_path)
         sources[rel_path] = source_path
 
+    photo_focus: dict[str, tuple[float, float]] = {}
+    plan_photo_rels = sorted({clip.rel_path for clip in plan.clips} & image_rels)
+    if plan_photo_rels:
+        photo_focus = await asyncio.to_thread(
+            compute_focus_points,
+            {rel: sources[rel] for rel in plan_photo_rels},
+            photo_rotations,
+        )
+
     encoder, flags = await resolve_encoder(profile)
     canvas_w, canvas_h = canvas_for(profile)
     title_textfile_abs = _write_title_textfile(export_dir, edit_id, plan)
@@ -103,6 +117,8 @@ async def render_job_handler(ctx: Any, payload: dict) -> dict:
             no_audio_rels=no_audio_rels,
             hdr_rels=hdr_rels,
             hdr_engine=engine,
+            photo_rotations=photo_rotations,
+            photo_focus=photo_focus,
         )
         probe = await asyncio.to_thread(
             subprocess.run,
@@ -183,8 +199,9 @@ async def render_job_handler(ctx: Any, payload: dict) -> dict:
     try:
         await conn.execute(
             "UPDATE edits SET status='rendered', render_path=?, error=NULL, "
+            "rendered_duration_sec=?, "
             "rendered_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?",
-            (str(output_path), edit_id),
+            (str(output_path), round(total_seconds, 3), edit_id),
         )
         await conn.commit()
     finally:

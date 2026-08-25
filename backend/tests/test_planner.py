@@ -404,3 +404,51 @@ def test_shrink_caps_overshoot(tmp_path):
     assert total <= 10.0 * 1.12 + 0.01
     assert total >= 10.0 * 0.5
     assert all(c.end_sec <= 40.25 for c in fixed.clips)
+
+
+def _photo_refs_and_clips(count, span):
+    from app.planner.generate import CandidateRef
+    from app.planner.schemas import PlannedClip
+
+    refs = [
+        CandidateRef(
+            scene_id=i + 1,
+            rel_path=f"p{i}.jpg",
+            kind="photo",
+            start_sec=0.0,
+            end_sec=0.0,
+            score=0.9,
+        )
+        for i in range(count)
+    ]
+    clips = [
+        PlannedClip(
+            rel_path=f"p{i}.jpg",
+            start_sec=0.0,
+            end_sec=span,
+            transition_in="crossfade",
+            transition_duration_sec=0.5,
+        )
+        for i in range(count)
+    ]
+    return refs, clips
+
+
+def test_fit_exact_growth_spreads_evenly_across_photos():
+    from app.planner.generate import expected_plan_duration, fit_exact_duration
+
+    refs, clips = _photo_refs_and_clips(14, 3.0)
+    fitted = fit_exact_duration(clips, refs, {}, 45.0)
+    assert expected_plan_duration(fitted) == pytest.approx(45.0, abs=0.05)
+    spans = [c.end_sec - c.start_sec for c in fitted]
+    assert max(spans) - min(spans) <= 1.0 / 30 + 1e-6
+
+
+def test_fit_exact_shrink_spreads_evenly_across_photos():
+    from app.planner.generate import expected_plan_duration, fit_exact_duration
+
+    refs, clips = _photo_refs_and_clips(14, 4.0)
+    fitted = fit_exact_duration(clips, refs, {}, 45.0)
+    assert expected_plan_duration(fitted) == pytest.approx(45.0, abs=0.05)
+    spans = [c.end_sec - c.start_sec for c in fitted]
+    assert max(spans) - min(spans) <= 1.0 / 30 + 1e-6

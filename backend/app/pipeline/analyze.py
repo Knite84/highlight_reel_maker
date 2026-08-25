@@ -67,12 +67,8 @@ async def analyze_job_handler(ctx: Any, payload: dict) -> dict:
     }
     try:
         await migrate_project(conn)
-        cur = await conn.execute("SELECT COUNT(*) FROM files")
-        if int((await cur.fetchone())[0]) == 0:
-            await ctx.progress(
-                done=0, total=0, message="Folder not scanned yet; scanning first", force=True
-            )
-            await scan_project(ctx, payload, conn)
+        await ctx.progress(done=0, total=0, message="Scanning folder", force=True)
+        await scan_project(ctx, payload, conn)
         cur = await conn.execute(
             "SELECT id, rel_path, kind, size_bytes, mtime, xxhash, rotation, analyzed_at "
             "FROM files ORDER BY rel_path"

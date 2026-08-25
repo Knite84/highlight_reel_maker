@@ -98,6 +98,16 @@ class InputMaps:
         self.hdr_inputs: set[int] = set()
 
 
+def _transpose_filters(rotation: int) -> list[str]:
+    if rotation == 90:
+        return ["transpose=1"]
+    if rotation == 180:
+        return ["transpose=1", "transpose=1"]
+    if rotation == 270:
+        return ["transpose=2"]
+    return []
+
+
 def _clip_video_chain(
     clip_index: int,
     input_index: int,
@@ -110,19 +120,28 @@ def _clip_video_chain(
     hdr_engine: str = "libplacebo",
     is_image: bool = False,
     freeze_tail_sec: float = 0.0,
+    rotation: int = 0,
+    focus: tuple[float, float] | None = None,
 ) -> str:
     label = f"cv{input_index}"
     out_res = f"{canvas_w}x{canvas_h}"
     filters: list[str] = []
     if input_index in maps.hdr_inputs and not is_image:
         filters.append(_hdr_filter(hdr_engine))
+    if is_image and rotation:
+        filters.extend(_transpose_filters(rotation))
     frames = max(int(span_seconds * FPS), 2)
     if is_image:
         big_w, big_h = canvas_w * 4, canvas_h * 4
-        filters += [
-            f"scale={big_w}:{big_h}:force_original_aspect_ratio=increase",
-            f"crop={big_w}:{big_h}",
-        ]
+        filters.append(f"scale={big_w}:{big_h}:force_original_aspect_ratio=increase")
+        if focus is not None:
+            cx, cy = max(0.0, min(1.0, focus[0])), max(0.0, min(1.0, focus[1]))
+            filters.append(
+                f"crop={big_w}:{big_h}:x='clip({cx:.4f}*iw-ow/2,0,iw-ow)'"
+                f":y='clip({cy:.4f}*ih-oh/2,0,ih-oh)'"
+            )
+        else:
+            filters.append(f"crop={big_w}:{big_h}")
         if ken_burns:
             filters.append(
                 _kb_filter(
@@ -180,6 +199,8 @@ def build_filtergraph(
     title_textfile: Path | None = None,
     hdr_engine: str = "libplacebo",
     image_rels: frozenset[str] | set[str] = frozenset(),
+    photo_rotations: dict[str, int] | None = None,
+    photo_focus: dict[str, tuple[float, float]] | None = None,
 ) -> tuple[str, float]:
     clips = plan.clips
     chains: list[str] = []
@@ -216,6 +237,8 @@ def build_filtergraph(
                     hdr_engine,
                     is_image=clip.rel_path in image_rels,
                     freeze_tail_sec=clip.freeze_tail_sec,
+                    rotation=(photo_rotations or {}).get(clip.rel_path, 0),
+                    focus=(photo_focus or {}).get(clip.rel_path),
                 )
             )
             pad_to = (
@@ -295,6 +318,8 @@ def build_render_args(
     no_audio_rels: frozenset[str] | set[str] = frozenset(),
     hdr_rels: frozenset[str] | set[str] = frozenset(),
     hdr_engine: str = "libplacebo",
+    photo_rotations: dict[str, int] | None = None,
+    photo_focus: dict[str, tuple[float, float]] | None = None,
 ) -> tuple[list[str], float]:
     args: list[str] = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
     if hdr_rels and hdr_engine == "libplacebo":
@@ -348,6 +373,8 @@ def build_render_args(
         title_textfile=title_textfile,
         hdr_engine=hdr_engine,
         image_rels=image_rels,
+        photo_rotations=photo_rotations,
+        photo_focus=photo_focus,
     )
 
     args += [

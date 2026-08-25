@@ -44,7 +44,7 @@ const { data: systemStatus } = useQuery({
 
 const activeJobId = ref<number | null>(null)
 const actionError = ref('')
-const busyAction = ref<'scan' | 'analyze' | null>(null)
+const busyAction = ref<'analyze' | null>(null)
 
 const job = computed(() => (activeJobId.value === null ? null : jobStore.byId(activeJobId.value)))
 
@@ -160,25 +160,17 @@ watch(finished, async (isDone, wasDone) => {
   }
 })
 
-async function runAction(kind: 'scan' | 'analyze', suffix: string) {
-  busyAction.value = kind
+async function runAnalysis() {
+  busyAction.value = 'analyze'
   actionError.value = ''
   try {
-    const result = await api.post<{ job_id: number }>(`/projects/${projectId}${suffix}`)
+    const result = await api.post<{ job_id: number }>(`/projects/${projectId}/analyze`)
     activeJobId.value = result.job_id
   } catch (e) {
     actionError.value = e instanceof Error ? e.message : String(e)
   } finally {
     busyAction.value = null
   }
-}
-
-function startScan() {
-  void runAction('scan', '/scan')
-}
-
-function startAnalysis() {
-  void runAction('analyze', '/analyze')
 }
 
 const promptText = ref('')
@@ -220,7 +212,24 @@ function toggleExpanded(id: number) {
   expandedId.value = expandedId.value === id ? null : id
 }
 
-const showFiles = ref(false)
+function persistedFlag(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistFlag(key: string, value: boolean) {
+  try {
+    localStorage.setItem(key, value ? '1' : '0')
+  } catch {}
+}
+
+const showFiles = ref(persistedFlag(`reelmaker:${projectId}:files-open`))
+const showScenes = ref(persistedFlag(`reelmaker:${projectId}:scenes-open`))
+watch(showFiles, (v) => persistFlag(`reelmaker:${projectId}:files-open`, v))
+watch(showScenes, (v) => persistFlag(`reelmaker:${projectId}:scenes-open`, v))
 const reelList = computed(() => plansQuery.data.value ?? [])
 const activePlanDetail = computed(() => planDetailQuery.data.value ?? null)
 
@@ -316,6 +325,37 @@ function formatTime(seconds: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
 }
 
+function formatDateTime(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function durationLabel(reel: ReelPlan): string {
+  const seconds = reel.rendered_duration_sec ?? reel.target_duration_sec
+  return `${Math.round(seconds)}s`
+}
+
+function renderLabel(reel: ReelPlan): string {
+  if (reel.status === 'rendering' || (renderInProgress.value && renderingReelId.value === reel.id)) {
+    return 'Rendering…'
+  }
+  if (reel.status === 'failed') return 'Retry render'
+  if (reel.status === 'rendered') return 'Re-render'
+  return 'Render'
+}
+
+function onDownloadReel() {
+  window.setTimeout(() => {
+    void queryClient.invalidateQueries({ queryKey: ['plans', projectId] })
+  }, 1500)
+}
+
 function thumbUrl(sceneId: number): string {
   return `/api/projects/${projectId}/thumbs/${sceneId}`
 }
@@ -330,26 +370,26 @@ const fileList = computed(() => filesQuery.data.value ?? [])
     <div class="page-head">
       <h1>{{ project.name }}</h1>
       <div class="actions">
-        <button class="ghost" :disabled="busyAction !== null" @click="startScan">Scan</button>
-        <button :disabled="busyAction !== null" @click="startAnalysis">
+        <button :disabled="busyAction !== null" @click="runAnalysis">
           {{ busyAction === 'analyze' ? 'Analyzing…' : 'Analyze' }}
         </button>
       </div>
     </div>
     <p class="muted">{{ project.media_path }}</p>
 
-    <div class="card status-row">
-      <StatusPill label="ffmpeg" :ok="!!systemStatus?.tools?.ffmpeg" />
-      <StatusPill label="ffprobe" :ok="!!systemStatus?.tools?.ffprobe" />
-      <StatusPill label="exiftool" :ok="!!systemStatus?.tools?.exiftool" />
-      <StatusPill label="GPU" :ok="!!systemStatus?.gpu?.ok" :detail="systemStatus?.gpu?.name ?? ''" />
-      <StatusPill label="NVENC" :ok="!!systemStatus?.nvenc?.ok" />
+    <div class="status-row status-inline">
+      <StatusPill compact label="ffmpeg" :ok="!!systemStatus?.tools?.ffmpeg" />
+      <StatusPill compact label="ffprobe" :ok="!!systemStatus?.tools?.ffprobe" />
+      <StatusPill compact label="exiftool" :ok="!!systemStatus?.tools?.exiftool" />
+      <StatusPill compact label="GPU" :ok="!!systemStatus?.gpu?.ok" :detail="systemStatus?.gpu?.name ?? ''" />
+      <StatusPill compact label="NVENC" :ok="!!systemStatus?.nvenc?.ok" />
       <StatusPill
+        compact
         label="Unsloth"
         :ok="!!systemStatus?.unsloth?.ok"
         :detail="systemStatus?.unsloth?.error ?? ''"
       />
-      <button class="ghost" @click="refreshStatus">Refresh</button>
+      <button class="ghost refresh-link" @click="refreshStatus">Refresh</button>
     </div>
 
     <div v-if="topJob" class="card progress">
@@ -365,56 +405,6 @@ const fileList = computed(() => filesQuery.data.value ?? [])
     </div>
 
     <p v-if="actionError" class="error">{{ actionError }}</p>
-
-    <h2>Scene search</h2>
-    <div class="card search-panel">
-      <input
-        v-model="searchInput"
-        class="search-input"
-        placeholder='Search scenes… try "sunset", "water", "people"'
-      />
-      <div v-if="tagList.length" class="chip-row">
-        <button
-          v-for="tag in tagList"
-          :key="tag.tag"
-          class="chip"
-          :class="{ 'chip-active': activeTag === tag.tag }"
-          @click="activeTag = activeTag === tag.tag ? null : tag.tag"
-        >
-          {{ tag.tag }} <span class="chip-count">{{ tag.count }}</span>
-        </button>
-      </div>
-    </div>
-
-    <div class="grid scene-grid">
-      <article v-for="scene in sceneResults" :key="scene.scene_id" class="card scene-card">
-        <img
-          v-if="scene.thumb_rel"
-          :src="thumbUrl(scene.scene_id)"
-          :alt="scene.rel_path"
-          loading="lazy"
-        />
-        <div v-else class="thumb-placeholder">no preview</div>
-        <p class="file-name">{{ scene.rel_path }}</p>
-        <p class="muted">
-          {{ scene.kind === 'video' ? `${formatTime(scene.start_sec)}–${formatTime(scene.end_sec)}` : 'photo' }}
-          &middot; score {{ scene.score.toFixed(3) }}
-        </p>
-        <div class="chip-row">
-          <button
-            v-for="t in scene.tags.slice(0, 4)"
-            :key="t.tag"
-            class="chip"
-            @click="activeTag = t.tag"
-          >
-            {{ t.tag }}
-          </button>
-        </div>
-      </article>
-    </div>
-    <p v-if="!scenesQuery.isLoading.value && sceneResults.length === 0" class="muted">
-      No indexed scenes yet. Run Analyze to build the knowledge base.
-    </p>
 
     <h2>Generate reel</h2>
     <div class="card form plan-form">
@@ -434,6 +424,12 @@ const fileList = computed(() => filesQuery.data.value ?? [])
       >
         {{ generating ? 'Sending…' : 'Generate plan' }}
       </button>
+      <p
+        v-if="!tagsQuery.isLoading.value && tagList.length === 0"
+        class="muted"
+      >
+        No indexed scenes yet — run Analyze first for best results.
+      </p>
       <div
         v-if="waitingForPlanner || activePlanJob"
         class="inline-progress"
@@ -462,52 +458,58 @@ const fileList = computed(() => filesQuery.data.value ?? [])
     <div v-if="reelList.length === 0" class="muted">
       No reels yet. Generate a plan above.
     </div>
-    <div v-else class="reel-list">
-      <article v-for="reel in reelList" :key="reel.id" class="card reel-card">
-        <div class="page-head">
-          <button class="ghost" @click="toggleExpanded(reel.id)">
-            {{ expandedId === reel.id ? '▾' : '▸' }} Reel #{{ reel.id }}
+    <div v-else class="reel-grid">
+      <div class="reel-head">
+        <span>Reel</span>
+        <span>Render</span>
+        <span>Length</span>
+        <span>Created</span>
+        <span>Description</span>
+        <span>Model</span>
+        <span></span>
+      </div>
+      <template v-for="reel in reelList" :key="reel.id">
+        <div class="reel-row" :class="reel.downloaded_at ? 'read' : 'unread'">
+          <button class="ghost reel-expand" @click="toggleExpanded(reel.id)">
+            {{ expandedId === reel.id ? '▾' : '▸' }} #{{ reel.id }}
           </button>
-          <span class="badge" :class="reel.status">{{ reel.status }}</span>
-        </div>
-        <p class="file-name">{{ reel.prompt }}</p>
-        <p class="muted">
-          target {{ reel.target_duration_sec }}s · {{ reel.model_id ?? 'unknown model' }} ·
-          {{ reel.created_at }}
-        </p>
-        <p v-if="reel.error" class="error">{{ reel.error }}</p>
-        <div class="actions">
-          <button
-            :disabled="reel.status === 'rendering' || (renderInProgress && renderingReelId === reel.id)"
-            @click="renderPlan(reel.id)"
-          >
-            {{ renderInProgress && renderingReelId === reel.id ? 'Rendering…' : 'Render (proxy)' }}
-          </button>
+          <div class="reel-render">
+            <button
+              :disabled="reel.status === 'rendering' || (renderInProgress && renderingReelId === reel.id)"
+              :title="reel.error ?? ''"
+              @click="renderPlan(reel.id)"
+            >
+              {{ renderLabel(reel) }}
+            </button>
+            <div
+              v-if="renderInProgress && renderingReelId === reel.id && activeRenderJob"
+              class="bar slim"
+              :title="`${renderPercent}%`"
+            >
+              <div class="bar-fill" :style="{ width: renderPercent + '%' }" />
+            </div>
+          </div>
+          <span>{{ durationLabel(reel) }}</span>
+          <span class="muted reel-created">{{ formatDateTime(reel.created_at) }}</span>
+          <span class="reel-desc" :title="reel.prompt">{{ reel.prompt }}</span>
+          <span class="reel-model" :title="reel.model_id ?? ''">{{ reel.model_id ?? '—' }}</span>
           <a
             v-if="reel.status === 'rendered'"
             class="download-link"
             :href="`/api/projects/${projectId}/plans/${reel.id}/download`"
-          >
-            Download MP4
-          </a>
+            title="Download MP4"
+            @click="onDownloadReel"
+          >⬇</a>
+          <span v-else class="muted reel-nodl" title="Render first to download">—</span>
         </div>
-        <div
-          v-if="renderInProgress && renderingReelId === reel.id && activeRenderJob"
-          class="inline-progress"
+        <p
+          v-if="reel.status === 'rendering' && !(renderInProgress && renderingReelId === reel.id)"
+          class="muted pulse reel-pulse"
         >
-          <div class="progress-head">
-            <span>Rendering proxy…</span>
-            <span>{{ renderPercent }}%</span>
-          </div>
-          <div class="bar"><div class="bar-fill" :style="{ width: renderPercent + '%' }" /></div>
-          <p v-if="activeRenderJob.error" class="error" :title="activeRenderJob.error">
-            {{ activeRenderJob.error.slice(0, 200) }}{{ (activeRenderJob.error.length ?? 0) > 200 ? '…' : '' }}
-          </p>
-        </div>
-        <p v-else-if="reel.status === 'rendering'" class="muted pulse">
-          Render in progress… this card updates automatically.
+          Reel #{{ reel.id }} render in progress… this row updates automatically.
         </p>
-        <div v-if="expandedId === reel.id && activePlanDetail" class="plan-detail">
+        <div v-if="expandedId === reel.id && activePlanDetail" class="reel-detail">
+          <p v-if="reel.error" class="error">{{ reel.error }}</p>
           <PlanPreview
             v-if="activePlanDetail.plan"
             :project-id="projectId"
@@ -526,8 +528,63 @@ const fileList = computed(() => filesQuery.data.value ?? [])
             </li>
           </ol>
         </div>
-      </article>
+      </template>
     </div>
+
+    <h2 class="collapsible" @click="showScenes = !showScenes">
+      {{ showScenes ? '▾' : '▸' }} Scene library
+      <span v-if="tagList.length" class="muted">({{ tagList.length }} tags)</span>
+    </h2>
+    <template v-if="showScenes">
+      <div class="card search-panel">
+        <input
+          v-model="searchInput"
+          class="search-input"
+          placeholder='Search scenes… try "sunset", "water", "people"'
+        />
+        <div v-if="tagList.length" class="chip-row">
+          <button
+            v-for="tag in tagList"
+            :key="tag.tag"
+            class="chip"
+            :class="{ 'chip-active': activeTag === tag.tag }"
+            @click="activeTag = activeTag === tag.tag ? null : tag.tag"
+          >
+            {{ tag.tag }} <span class="chip-count">{{ tag.count }}</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="grid scene-grid">
+        <article v-for="scene in sceneResults" :key="scene.scene_id" class="card scene-card">
+          <img
+            v-if="scene.thumb_rel"
+            :src="thumbUrl(scene.scene_id)"
+            :alt="scene.rel_path"
+            loading="lazy"
+          />
+          <div v-else class="thumb-placeholder">no preview</div>
+          <p class="file-name">{{ scene.rel_path }}</p>
+          <p class="muted">
+            {{ scene.kind === 'video' ? `${formatTime(scene.start_sec)}–${formatTime(scene.end_sec)}` : 'photo' }}
+            &middot; score {{ scene.score.toFixed(3) }}
+          </p>
+          <div class="chip-row">
+            <button
+              v-for="t in scene.tags.slice(0, 4)"
+              :key="t.tag"
+              class="chip"
+              @click="activeTag = t.tag"
+            >
+              {{ t.tag }}
+            </button>
+          </div>
+        </article>
+      </div>
+      <p v-if="!scenesQuery.isLoading.value && sceneResults.length === 0" class="muted">
+        No indexed scenes yet. Run Analyze to build the knowledge base.
+      </p>
+    </template>
 
     <h2 class="collapsible" @click="showFiles = !showFiles">
       {{ showFiles ? '▾' : '▸' }} Media files

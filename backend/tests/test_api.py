@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 
@@ -67,3 +68,44 @@ def test_scan_flow_end_to_end(client, media_dir):
     deleted = client.delete(f"/api/projects/{project_id}?purge=true").json()
     assert deleted == {"deleted": True, "purged": True}
     assert client.get(f"/api/projects/{project_id}").status_code == 404
+
+
+def test_download_marks_reel_downloaded(client, media_dir):
+    from app.core.config import get_settings
+    from app.core.db import connect, migrate_project, project_db_path
+
+    created = client.post(
+        "/api/projects", json={"name": "DL Test", "media_path": str(media_dir)}
+    ).json()
+    project_id = created["id"]
+    settings = get_settings()
+    db_path = project_db_path(settings.projects_root, created["slug"])
+    render_file = db_path.parent / "exports" / "reel.mp4"
+    render_file.parent.mkdir(parents=True, exist_ok=True)
+    render_file.write_bytes(b"fake mp4")
+
+    async def _seed():
+        conn = await connect(db_path)
+        try:
+            await migrate_project(conn)
+            await conn.execute(
+                "INSERT INTO edits(prompt, target_duration_sec, status, plan_json, model_id, "
+                "render_path) VALUES ('p', 10, 'rendered', '{}', 'm', ?)",
+                (str(render_file),),
+            )
+            await conn.commit()
+        finally:
+            await conn.close()
+
+    asyncio.run(_seed())
+
+    plans = client.get(f"/api/projects/{project_id}/plans").json()
+    assert plans[0]["downloaded_at"] is None
+    assert plans[0]["rendered_duration_sec"] is None
+
+    response = client.get(f"/api/projects/{project_id}/plans/1/download")
+    assert response.status_code == 200
+    assert response.content == b"fake mp4"
+
+    plans = client.get(f"/api/projects/{project_id}/plans").json()
+    assert plans[0]["downloaded_at"] is not None

@@ -151,6 +151,8 @@ async def migrate_project(conn: aiosqlite.Connection) -> None:
     await migrate(conn, PROJECT_SCHEMA)
     await _ensure_column(conn, "files", "rotation", "INTEGER")
     await _ensure_column(conn, "files", "analyzed_at", "TEXT")
+    await _ensure_column(conn, "edits", "downloaded_at", "TEXT")
+    await _ensure_column(conn, "edits", "rendered_duration_sec", "REAL")
     await conn.commit()
 
 

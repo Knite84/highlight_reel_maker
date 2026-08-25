@@ -269,27 +269,20 @@ def _grow_one_frame(
     updated: list[PlannedClip], refs: list[CandidateRef], durations: dict[str, float]
 ) -> bool:
     quantum = 1.0 / RENDER_FPS
-    candidates_order = range(len(updated) - 1, -1, -1)
     best_index = None
-    best_capacity = 0.0
-    for index in candidates_order:
-        clip = updated[index]
-        ref = next((r for r in refs if r.rel_path == clip.rel_path), None)
-        if ref is not None and ref.kind == "photo":
-            capacity = float("inf")
-        else:
-            file_duration = durations.get(clip.rel_path)
-            hard_high = (
-                min(ref.end_sec + 0.25, file_duration)
-                if ref and file_duration
-                else (ref.end_sec + 0.25 if ref else clip.end_sec)
-            )
-            capacity = hard_high - clip.end_sec
-        if capacity > best_capacity:
-            best_capacity = capacity
+    best_span = None
+    for index, clip in enumerate(updated):
+        bounds = _clip_bounds(clip, refs, durations)
+        if bounds is None:
+            continue
+        _low, high = bounds
+        if high - clip.end_sec < quantum:
+            continue
+        span = clip.end_sec - clip.start_sec
+        if best_span is None or span < best_span:
+            best_span = span
             best_index = index
-    del candidates_order
-    if best_index is None or best_capacity < quantum:
+    if best_index is None:
         return False
     clip = updated[best_index]
     updated[best_index] = clip.model_copy(update={"end_sec": round(clip.end_sec + quantum, 6)})
@@ -298,16 +291,22 @@ def _grow_one_frame(
 
 def _shrink_one_frame(updated: list[PlannedClip], refs: list[CandidateRef]) -> bool:
     quantum = 1.0 / RENDER_FPS
-    for index in range(len(updated) - 1, -1, -1):
-        clip = updated[index]
+    best_index = None
+    best_span = None
+    for index, clip in enumerate(updated):
         min_span = _clip_min_span(clip, refs)
         reducible = (clip.end_sec - clip.start_sec) - min_span
-        if reducible >= quantum:
-            updated[index] = clip.model_copy(
-                update={"end_sec": round(clip.end_sec - quantum, 6)}
-            )
-            return True
-    return False
+        if reducible < quantum:
+            continue
+        span = clip.end_sec - clip.start_sec
+        if best_span is None or span >= best_span:
+            best_span = span
+            best_index = index
+    if best_index is None:
+        return False
+    clip = updated[best_index]
+    updated[best_index] = clip.model_copy(update={"end_sec": round(clip.end_sec - quantum, 6)})
+    return True
 
 
 def _clip_min_span(clip: PlannedClip, refs: list[CandidateRef]) -> float:

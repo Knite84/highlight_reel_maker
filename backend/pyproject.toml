@@ -39,6 +39,7 @@ extend-ignore = ["B008"]
 "app/pipeline/analyze.py" = ["BLE001"]
 "app/planner/generate.py" = ["DTZ"]
 "app/api/system.py" = ["BLE001"]
+"app/renderer/photo_crop.py" = ["BLE001"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
