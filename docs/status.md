@@ -27,7 +27,11 @@ We are effectively **mid-Phase 3** of the original plan. Docker was considered a
   **Frame growth/shrink is water-filled** (`_grow_one_frame` grows the shortest clip with
   headroom, `_shrink_one_frame` trims the longest first) — residual time spreads evenly across
   clips instead of piling onto the last one (was: 14-photo reel → 13×~3s + one 9.1s finale).
-  Filler photos enter at `PHOTO_DEFAULT_SEC` (2.5s) and get raised to parity by the growth pass
+  Filler photos enter at `PHOTO_DEFAULT_SEC` (2.5s) and get raised to parity by the growth pass.
+  **`_evenize_photo_spans`** runs after the fitter: stills are set directly to
+  (target + crossfade overlap − video spans) ÷ n_photos, frame-quantized, then a second fitter
+  pass nails the exact contract — so uneven LLM-chosen still spans (e.g. a 15.9s finale) can
+  never survive, even when the plan already lands on target. Videos keep their natural spans
 - Transitions: crossfade is the planner *default* (esp. around photos); cuts reserved for action
 - Color: HDR (HLG/PQ) sources tone-mapped via **libplacebo BT.2390** (Vulkan), zscale+hable
   fallback; output tagged BT.709/tv. Quality knobs: proxy 720p@8M, final 1080p@20M, mild unsharp
@@ -100,13 +104,16 @@ We are effectively **mid-Phase 3** of the original plan. Docker was considered a
    templates auto-unwrap only top-level refs. SSE can silently die across backend restarts →
    polling fallbacks are load-bearing.
 7. **Vite has `strictPort: true`** (5173) — port conflict fails loudly instead of drifting.
-8. Backend restart required after Python edits (no --reload): stop/start scripts.
+8. Backend restart required after Python edits (no --reload): stop/start scripts. **This has
+   bitten twice (2026-08-25)**: a fitter fix looked broken because the backend process was a
+   day old. Before debugging "the fix didn't work", check the port-8000 listener's process
+   start time (`Get-NetTCPConnection -LocalPort 8000`) against when the change was made.
 9. **Photo render chain order**: `transpose` (EXIF) → `scale(cover, 4×)` → `crop=W:H:x='clip(cx*iw-ow/2,0,iw-ow)':y=…` → `zoompan`. Crop offsets use single-quoted `clip()` expressions so no pixel math against ffmpeg's scaler is needed; commas are safe *only because* they're quoted (gotcha 3). Rotation convention: files.rotation is degrees-CW-to-display; maps to `transpose=1|1,1|2` for 90/180/270.
 10. **Face-detection coords must be in display orientation**: reuse `_load_image_bgr` + `_apply_rotation` from frames_cv (cv2.imread ignores EXIF; the HEIC/PIL path already transposes and reports it via its bool). YuNet runs on a ≤1024px downscale — normalized focus points need no coordinate remapping. Full-res re-detection does NOT recover pose-missed faces (tested). If face crops ever look wrong again: first check `%LOCALAPPDATA%\ReelMaker\models\` actually contains the ONNX — download failures are swallowed into silent heuristic fallback (backend log shows a warning only).
 
 ## Verification state
 
-- Backend: 51 fast tests green (`uv run pytest`), ruff clean; `-m slow` runs real-model E2E
+- Backend: 53 fast tests green (`uv run pytest`), ruff clean; `-m slow` runs real-model E2E
   (incl. portrait+rotation+focus ffmpeg render-parse test)
 - Frontend: `npm run build` type-checked green
 - Live smoke history: analyze(71 files)→described=71; plans→renders with audio/photos/HDR OK

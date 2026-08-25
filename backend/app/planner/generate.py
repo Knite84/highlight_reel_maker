@@ -184,8 +184,43 @@ async def validate_and_fix_plan(plan: EditPlan, refs: list[CandidateRef], conn: 
         valid_clips = _append_filler_clips(valid_clips, refs, target)
 
     valid_clips = fit_exact_duration(valid_clips, refs, durations, target)
+    valid_clips = _evenize_photo_spans(valid_clips, refs, target)
+    valid_clips = fit_exact_duration(valid_clips, refs, durations, target)
 
     return plan.model_copy(update={"clips": valid_clips})
+
+
+def _is_photo_clip(clip: PlannedClip, refs: list[CandidateRef]) -> bool:
+    ref = next((r for r in refs if r.rel_path == clip.rel_path), None)
+    return ref is None or ref.kind == "photo"
+
+
+def _evenize_photo_spans(
+    clips: list[PlannedClip],
+    refs: list[CandidateRef],
+    target_seconds: float,
+) -> list[PlannedClip]:
+    photo_indexes = [i for i, clip in enumerate(clips) if _is_photo_clip(clip, refs)]
+    if len(photo_indexes) < 2:
+        return clips
+    quantum = 1.0 / RENDER_FPS
+    total_span = sum(c.end_sec - c.start_sec for c in clips)
+    expected = expected_plan_duration(clips)
+    overlap = max(total_span - expected, 0.0)
+    video_span = sum(
+        clips[i].end_sec - clips[i].start_sec for i in range(len(clips)) if i not in photo_indexes
+    )
+    per_photo_frames = round((target_seconds + overlap - video_span) / len(photo_indexes) / quantum)
+    min_frames = int(1.5 / quantum)
+    if per_photo_frames < min_frames:
+        return clips
+    even_span = round(per_photo_frames * quantum, 6)
+    return [
+        clip.model_copy(update={"start_sec": 0.0, "end_sec": even_span})
+        if i in photo_indexes
+        else clip
+        for i, clip in enumerate(clips)
+    ]
 
 
 def expected_plan_duration(clips: list[PlannedClip]) -> float:

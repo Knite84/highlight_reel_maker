@@ -452,3 +452,76 @@ def test_fit_exact_shrink_spreads_evenly_across_photos():
     assert expected_plan_duration(fitted) == pytest.approx(45.0, abs=0.05)
     spans = [c.end_sec - c.start_sec for c in fitted]
     assert max(spans) - min(spans) <= 1.0 / 30 + 1e-6
+
+
+def test_evenize_flattens_uneven_photo_spans_at_target(tmp_path):
+    from app.planner.generate import CandidateRef, validate_and_fix_plan
+    from app.planner.schemas import EditPlan
+
+    async def run():
+        conn = await _seed_candidates_db(tmp_path / "db.sqlite")
+        try:
+            refs = [
+                CandidateRef(
+                    scene_id=i + 1,
+                    rel_path=f"p{i}.jpg",
+                    kind="photo",
+                    start_sec=0.0,
+                    end_sec=0.0,
+                    score=0.9,
+                )
+                for i in range(6)
+            ]
+            spans = [2.4] * 5 + [15.87]
+            raw = EditPlan.model_validate(
+                {
+                    "prompt": "p",
+                    "target_duration_sec": 27.87,
+                    "clips": [
+                        {
+                            "rel_path": f"p{i}.jpg",
+                            "start_sec": 0.0,
+                            "end_sec": s,
+                            "transition_in": "crossfade",
+                            "transition_duration_sec": 0.5,
+                        }
+                        for i, s in enumerate(spans)
+                    ],
+                }
+            )
+            return await validate_and_fix_plan(raw, refs, conn)
+        finally:
+            await conn.close()
+
+    fixed = asyncio.run(run())
+    from app.planner.generate import expected_plan_duration
+
+    assert expected_plan_duration(fixed.clips) == pytest.approx(27.87, abs=0.05)
+    spans_out = [c.end_sec - c.start_sec for c in fixed.clips]
+    assert max(spans_out) - min(spans_out) <= 1.0 / 30 + 1e-6
+
+
+def test_evenize_keeps_videos_and_levels_photos():
+    from app.planner.generate import (
+        CandidateRef,
+        _evenize_photo_spans,
+    )
+    from app.planner.schemas import PlannedClip
+
+    refs = [
+        CandidateRef(scene_id=1, rel_path="v.mp4", kind="video", start_sec=0.0, end_sec=8.0, score=0.9),
+        CandidateRef(scene_id=2, rel_path="a.jpg", kind="photo", start_sec=0.0, end_sec=0.0, score=0.9),
+        CandidateRef(scene_id=3, rel_path="b.jpg", kind="photo", start_sec=0.0, end_sec=0.0, score=0.9),
+        CandidateRef(scene_id=4, rel_path="c.jpg", kind="photo", start_sec=0.0, end_sec=0.0, score=0.9),
+    ]
+    clips = [
+        PlannedClip(rel_path="v.mp4", start_sec=0.0, end_sec=8.0, transition_in="crossfade", transition_duration_sec=0.5),
+        PlannedClip(rel_path="a.jpg", start_sec=0.0, end_sec=2.4, transition_in="crossfade", transition_duration_sec=0.5),
+        PlannedClip(rel_path="b.jpg", start_sec=0.0, end_sec=2.4, transition_in="crossfade", transition_duration_sec=0.5),
+        PlannedClip(rel_path="c.jpg", start_sec=0.0, end_sec=15.87, transition_in="crossfade", transition_duration_sec=0.5),
+    ]
+    evened = _evenize_photo_spans(clips, refs, 20.0)
+    assert evened[0].end_sec - evened[0].start_sec == pytest.approx(8.0)
+    photo_spans = [c.end_sec - c.start_sec for c in evened[1:]]
+    assert all(s == pytest.approx(photo_spans[0]) for s in photo_spans)
+    assert photo_spans[0] == pytest.approx((20.0 + 1.5 - 8.0) / 3, abs=0.04)
