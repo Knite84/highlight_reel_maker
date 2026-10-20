@@ -1,8 +1,8 @@
 from pathlib import Path
 
 from ..planner.schemas import EditPlan
+from ..planner.timing import FPS, timeline
 
-FPS = 30
 TAIL_FADE_SEC = 0.4
 ZSCALE_HDR = "zscale=t=linear:npl=100,tonemap=hable,zscale=t=bt709:m=bt709:r=tv"
 LIBPLACEBO_HDR = (
@@ -45,17 +45,6 @@ def _kb_filter(
     if direction == "pan_down":
         return f"zoompan=z='{fixed_zoom:.4f}':x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(1-{progress})':{base}"
     raise ValueError(f"unsupported ken_burns direction: {direction}")
-
-
-def _split_runs(plan: EditPlan) -> list[list[int]]:
-    runs: list[list[int]] = []
-    for index, clip in enumerate(plan.clips):
-        starts_new_run = index > 0 and clip.transition_in != "cut"
-        if not runs or starts_new_run:
-            runs.append([index])
-        else:
-            runs[-1].append(index)
-    return runs
 
 
 def _escape_drawtext(text: str) -> str:
@@ -203,16 +192,16 @@ def build_filtergraph(
 ) -> tuple[str, float]:
     clips = plan.clips
     chains: list[str] = []
-    runs = _split_runs(plan)
+    timing = timeline(clips)
+    runs = timing.runs
 
     run_labels: list[str] = []
     run_audio_labels: list[str] = []
-    run_durations: list[float] = []
+    run_durations = timing.run_durations
 
     for run_index, indexes in enumerate(runs):
         labels: list[str] = []
         audio_labels: list[str] = []
-        duration = 0.0
         for position, clip_index in enumerate(indexes):
             clip = clips[clip_index]
             span = clip.end_sec - clip.start_sec
@@ -246,7 +235,6 @@ def build_filtergraph(
             chains.append(_clip_audio_chain(audio_input, pad_to_sec=pad_to))
             labels.append(f"cv{video_input}")
             audio_labels.append(f"ca{audio_input}")
-            duration += span + clip.freeze_tail_sec
         run_label = labels[0]
         run_audio_label = audio_labels[0]
         if len(labels) > 1:
@@ -258,7 +246,6 @@ def build_filtergraph(
             chains.append(f"{a_inputs}concat=n={len(labels)}:v=0:a=1[{run_audio_label}]")
         run_labels.append(run_label)
         run_audio_labels.append(run_audio_label)
-        run_durations.append(round(duration, 4))
 
     result_label = run_labels[0]
     result_audio = run_audio_labels[0]
@@ -266,10 +253,8 @@ def build_filtergraph(
     for k in range(1, len(run_labels)):
         boundary_clip = plan.clips[runs[k][0]]
         name = "fade" if boundary_clip.transition_in == "crossfade" else "fadeblack"
-        duration = min(
-            boundary_clip.transition_duration_sec, total * 0.5, run_durations[k] * 0.5
-        )
-        offset = round(total - duration, 4)
+        duration = timing.overlaps[k - 1]
+        offset = timing.offsets[k - 1]
         merged_label = f"x{k}"
         chains.append(
             f"[{result_label}][{run_labels[k]}]"
@@ -331,7 +316,7 @@ def build_render_args(
         source = sources[clip.rel_path]
         span = clip.end_sec - clip.start_sec
         if clip.rel_path in image_rels:
-            args += ["-i", str(source)]
+            args += ["-noautorotate", "-i", str(source)]
             maps.video_of[clip_index] = next_input
             next_input += 1
         else:

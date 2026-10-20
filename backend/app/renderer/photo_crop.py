@@ -8,7 +8,7 @@ import httpx
 import numpy as np
 
 from ..core.config import get_settings
-from ..pipeline.frames_cv import _apply_rotation, _load_image_bgr
+from ..pipeline.frames_cv import _load_image_bgr
 
 logger = logging.getLogger(__name__)
 
@@ -135,9 +135,8 @@ def compute_focus_point(
     rotation: int = 0,
     target_aspect: float = DEFAULT_TARGET_ASPECT,
 ) -> tuple[float, float]:
-    img, already_transposed = _load_image_bgr(path)
-    if not already_transposed:
-        img = _apply_rotation(img, rotation)
+    # Legacy rotation arguments remain accepted; file metadata owns orientation.
+    img, _display_oriented = _load_image_bgr(path)
     scale = DETECT_MAX_SIDE / max(img.shape[1], img.shape[0])
     if scale < 1.0:
         new_w = max(1, round(img.shape[1] * scale))

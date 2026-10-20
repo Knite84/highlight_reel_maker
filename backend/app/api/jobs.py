@@ -18,9 +18,11 @@ async def _get_job_or_404(registry, job_id: int):
 
 
 @router.get("")
-async def list_jobs(limit: int = 50, registry=Depends(get_registry)):
+async def list_jobs(
+    limit: int = 50, project_id: int | None = None, registry=Depends(get_registry)
+):
     limit = max(1, min(limit, 200))
-    return await repos.list_jobs(registry, limit=limit)
+    return await repos.list_jobs(registry, limit=limit, project_id=project_id)
 
 
 @router.get("/stream")

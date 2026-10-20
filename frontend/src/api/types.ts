@@ -47,6 +47,10 @@ export interface TagCount {
 }
 
 export interface PlannedClip {
+  scene_id?: number | null
+  source_file_id?: number | null
+  source_revision?: number | null
+  source_hash?: string | null
   rel_path: string
   start_sec: number
   end_sec: number
@@ -83,8 +87,19 @@ export interface ReelPlanDetail extends ReelPlan {
   plan: EditPlanData
 }
 
+export interface RenderReview {
+  target_duration_sec: number
+  expected_duration_sec: number
+  sequencing: 'chronological' | 'narrative' | 'reverse_chronological' | 'saved_legacy_order'
+  sequencing_evidence: string | null
+  warnings: string[]
+  profile: string
+  token: string
+}
+
 export interface Job {
   id: number
+  revision: number
   project_id: number | null
   kind: string
   status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
@@ -96,6 +111,7 @@ export interface Job {
   created_at: string
   started_at: string | null
   finished_at: string | null
+  result_json: string | null
 }
 
 export interface SystemStatus {

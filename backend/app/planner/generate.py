@@ -7,22 +7,25 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from ..ai.providers import LLMProvider, PlannerOutputError
-from ..renderer.filtergraph import FPS as RENDER_FPS
 from .candidates import select_candidates
+from .ordering import requested_order
 from .schemas import EDIT_PLAN_JSON_SCHEMA, EditPlan, PlannedClip
+from .timing import FPS as RENDER_FPS
+from .timing import expected_plan_duration
 
 PLANNER_SYSTEM = (
     "You are an expert highlight-reel edit planner for a local home-video library. "
     "You receive a shortlist of analyzed scenes and a creative brief. "
     "Choose and sequence clips to build the requested reel. Hard rules:\n"
-    "1. Every clip's rel_path MUST be copied verbatim from the shortlist.\n"
+    "1. Every clip's scene_id and rel_path MUST be copied from the SAME shortlist entry.\n"
     "2. start_sec and end_sec are SECONDS copied from that candidate's [start, end] span; "
     "start_sec MUST be strictly LESS than end_sec.\n"
     "3. Total clip seconds should approximate target_duration_sec (within 20%);\n"
     "   pick roughly target_duration/4 clips, never more than needed.\n"
     "4. Keep individual clips between 1.2s and 8s.\n"
-    "5. Order the clips STRICTLY chronologically (oldest capture first) so the reel "
-    "plays in real sequential time; final ordering is enforced regardless.\n"
+    "5. Default to chronological order (oldest capture first). Only use narrative, "
+    "flashback or reverse order when the brief explicitly asks for that sequencing. "
+    "A storytelling mood alone does not request a different sequence.\n"
     "6. Use 'crossfade' as the DEFAULT transition between adjacent clips — always "
     "around photos, and generally every few clips. Reserve 'cut' only for fast "
     "action within the same scene. 'fade_from_black' belongs on the first clip only.\n"
@@ -42,6 +45,9 @@ class PlannerInputError(Exception):
 
 class CandidateRef(BaseModel):
     scene_id: int
+    file_id: int | None = None
+    source_revision: int = 0
+    source_hash: str | None = None
     rel_path: str
     kind: str
     start_sec: float
@@ -58,7 +64,7 @@ class CandidateRef(BaseModel):
         else:
             span_text = f"{self.start_sec:.1f}-{self.end_sec:.1f}s"
         return (
-            f"[{index}] {self.rel_path} {span_text} "
+            f"[{index}] scene_id={self.scene_id} {self.rel_path} {span_text} "
             f"score={self.score:.2f} type={self.kind} tags=[{tag_text}] desc: {desc}"
         )
 
@@ -86,6 +92,9 @@ async def _load_candidate_refs(conn: Any) -> list[CandidateRef]:
     return [
         CandidateRef(
             scene_id=int(row["scene_id"]),
+            file_id=int(row["file_id"]),
+            source_revision=int(row["source_revision"]),
+            source_hash=row["source_hash"],
             rel_path=row["rel_path"],
             kind=row["kind"],
             start_sec=row["start_sec"],
@@ -103,6 +112,7 @@ def build_planner_prompt(refs: list[CandidateRef], prompt: str, target_duration_
     photo_count = sum(1 for ref in refs if ref.kind == "photo")
     lines = [
         f"Creative brief: {prompt.strip() or 'best moments of this collection'}",
+        f"Server sequencing policy: {requested_order(prompt)[0]}.",
         f"Target reel duration: {target_duration_sec:.0f} seconds of clip time.",
         f"Aim for about {suggested_clips} clips averaging 3-5 seconds each.",
         "",
@@ -117,9 +127,9 @@ def build_planner_prompt(refs: list[CandidateRef], prompt: str, target_duration_
     lines.append("")
     lines.append(
         "Produce the Edit Plan JSON now. Example clip entry: "
-        '{"rel_path": "<verbatim from list>", "start_sec": 12.5, "end_sec": 16.0, '
+        '{"scene_id": 123, "rel_path": "<same entry from list>", "start_sec": 12.5, "end_sec": 16.0, '
         '"transition_in": "cut"}. For type=photo entries use start_sec=0 and set '
-        "end_sec to the seconds you want the still shown. Use only listed rel_paths."
+        "end_sec to the seconds you want the still shown. Copy its actual listed scene_id; 123 is only an example."
     )
     return "\n".join(lines)
 
@@ -134,13 +144,10 @@ async def validate_and_fix_plan(plan: EditPlan, refs: list[CandidateRef], conn: 
     valid_clips: list[PlannedClip] = []
     seen_spans: set[tuple[str, int]] = set()
     for clip in plan.clips:
-        ref = None
-        for candidate in refs:
-            if candidate.rel_path == clip.rel_path:
-                ref = candidate
-                break
+        ref = _reference_for_clip(clip, refs)
         if ref is None:
             continue
+        clip = _bind_clip(clip, ref).model_copy(update={"duration_filler": False})
 
         if ref.kind == "photo":
             span = clip.end_sec - clip.start_sec
@@ -155,8 +162,8 @@ async def validate_and_fix_plan(plan: EditPlan, refs: list[CandidateRef], conn: 
             continue
 
         file_duration = durations.get(clip.rel_path)
-        end_limit = min(ref.end_sec + 0.25, file_duration) if file_duration else ref.end_sec + 0.25
-        start = max(clip.start_sec, max(0.0, ref.start_sec - 0.5))
+        end_limit = min(ref.end_sec, file_duration) if file_duration else ref.end_sec
+        start = max(clip.start_sec, ref.start_sec)
         end = min(clip.end_sec, end_limit)
         if end - start < MIN_CLIP_SEC * 0.75:
             continue
@@ -164,13 +171,23 @@ async def validate_and_fix_plan(plan: EditPlan, refs: list[CandidateRef], conn: 
         if span_key in seen_spans:
             continue
         seen_spans.add(span_key)
-        valid_clips.append(clip.model_copy(update={"start_sec": round(start, 2), "end_sec": round(end, 2)}))
+        valid_clips.append(
+            clip.model_copy(update={"start_sec": round(start, 2), "end_sec": round(end, 2)})
+        )
 
     if not valid_clips:
         raise PlannerInputError("planner produced no usable clips from candidates")
 
     order = await _capture_order_map(conn)
-    valid_clips.sort(key=lambda clip: order.get(clip.rel_path, (float("inf"), clip.rel_path)))
+    def chronological_key(clip):
+        return (*order.get(clip.rel_path, (float("inf"), clip.rel_path)), clip.start_sec)
+
+    sequencing, evidence = requested_order(plan.prompt)
+    def apply_order(clips):
+        if sequencing != "narrative":
+            clips.sort(key=chronological_key, reverse=sequencing == "reverse_chronological")
+    apply_order(valid_clips)
+    selected_spans = {clip.scene_id: clip.end_sec - clip.start_sec for clip in valid_clips}
 
     target = plan.target_duration_sec
 
@@ -182,16 +199,30 @@ async def validate_and_fix_plan(plan: EditPlan, refs: list[CandidateRef], conn: 
     valid_clips, total = _extend_toward_target(valid_clips, refs, durations, until=target)
     if total < target:
         valid_clips = _append_filler_clips(valid_clips, refs, target)
+    apply_order(valid_clips)
 
     valid_clips = fit_exact_duration(valid_clips, refs, durations, target)
     valid_clips = _evenize_photo_spans(valid_clips, refs, target)
     valid_clips = fit_exact_duration(valid_clips, refs, durations, target)
 
-    return plan.model_copy(update={"clips": valid_clips})
+    if abs(expected_plan_duration(valid_clips) - target) > 1 / RENDER_FPS:
+        raise PlannerInputError("Could not fit the requested duration; choose another duration or selection")
+    adjustments = []
+    omitted = len(plan.clips) - sum(not clip.duration_filler for clip in valid_clips)
+    if omitted > 0:
+        adjustments.append(f"{omitted} model-selected clip(s) omitted during validation/duration fitting.")
+    extended = sum(max(0, clip.end_sec - clip.start_sec - selected_spans.get(clip.scene_id, 0))
+                   for clip in valid_clips if not clip.duration_filler and not _is_photo_clip(clip, refs))
+    if extended > 1 / RENDER_FPS:
+        adjustments.append(f"Video selections expanded by {extended:.1f}s within their source scenes to meet the target.")
+    return plan.model_copy(update={
+        "clips": valid_clips, "sequencing": sequencing, "sequencing_evidence": evidence,
+        "timing_adjustments": adjustments,
+    })
 
 
 def _is_photo_clip(clip: PlannedClip, refs: list[CandidateRef]) -> bool:
-    ref = next((r for r in refs if r.rel_path == clip.rel_path), None)
+    ref = _reference_for_clip(clip, refs)
     return ref is None or ref.kind == "photo"
 
 
@@ -223,34 +254,6 @@ def _evenize_photo_spans(
     ]
 
 
-def expected_plan_duration(clips: list[PlannedClip]) -> float:
-    if not clips:
-        return 0.0
-    runs: list[list[int]] = []
-    for index, clip in enumerate(clips):
-        starts_new_run = index > 0 and clip.transition_in != "cut"
-        if not runs or starts_new_run:
-            runs.append([index])
-        else:
-            runs[-1].append(index)
-
-    run_durations: list[float] = []
-    for indexes in runs:
-        duration = sum(
-            round(clips[i].end_sec - clips[i].start_sec + clips[i].freeze_tail_sec, 6)
-            for i in indexes
-        )
-        run_durations.append(round(duration, 4))
-
-    total = run_durations[0]
-    for k in range(1, len(runs)):
-        boundary = clips[runs[k][0]]
-        d = min(boundary.transition_duration_sec, total * 0.5, run_durations[k] * 0.5)
-        offset = round(total - d, 4)
-        total = offset + run_durations[k]
-    return round(total, 3)
-
-
 def fit_exact_duration(
     clips: list[PlannedClip],
     refs: list[CandidateRef],
@@ -277,11 +280,13 @@ def fit_exact_duration(
     if residual > quantum:
         if updated:
             last = updated[-1]
-            last_ref = next((r for r in refs if r.rel_path == last.rel_path), None)
+            last_ref = _reference_for_clip(last, refs)
             if last_ref is None or last_ref.kind != "photo":
                 updated[-1] = last.model_copy(
                     update={"freeze_tail_sec": round(last.freeze_tail_sec + residual, 4)}
                 )
+            else:
+                updated[-1] = last.model_copy(update={"end_sec": round(last.end_sec + residual, 6)})
     elif residual < -quantum:
         excess = -residual
         for index in range(len(updated) - 1, -1, -1):
@@ -291,9 +296,7 @@ def fit_exact_duration(
             if reducible <= 0:
                 continue
             cut = min(excess, reducible)
-            updated[index] = clip.model_copy(
-                update={"end_sec": round(clip.end_sec - cut, 4)}
-            )
+            updated[index] = clip.model_copy(update={"end_sec": round(clip.end_sec - cut, 4)})
             excess -= cut
             if excess <= 0:
                 break
@@ -345,7 +348,7 @@ def _shrink_one_frame(updated: list[PlannedClip], refs: list[CandidateRef]) -> b
 
 
 def _clip_min_span(clip: PlannedClip, refs: list[CandidateRef]) -> float:
-    ref = next((r for r in refs if r.rel_path == clip.rel_path), None)
+    ref = _reference_for_clip(clip, refs)
     return 1.5 if (ref is None or ref.kind == "photo") else MIN_CLIP_SEC
 
 
@@ -357,24 +360,30 @@ def _append_filler_clips(
 
     result = list(clips)
     used_keys = {(clip.rel_path, int(clip.start_sec)) for clip in result}
+    used_scenes = {
+        ref.scene_id for clip in result if (ref := _reference_for_clip(clip, refs)) is not None
+    }
     for ref in refs:
         current_total = sum(span_of(c) for c in result)
         if current_total >= target:
             break
         key = (ref.rel_path, int(ref.start_sec))
-        if key in used_keys:
+        if key in used_keys or ref.scene_id in used_scenes:
             continue
         if ref.kind == "photo":
             result.append(
                 PlannedClip(
+                    **_identity_fields(ref),
                     rel_path=ref.rel_path,
                     start_sec=0.0,
                     end_sec=PHOTO_DEFAULT_SEC,
                     transition_in="crossfade",
                     reason="duration filler",
+                    duration_filler=True,
                 )
             )
             used_keys.add((ref.rel_path, 0))
+            used_scenes.add(ref.scene_id)
             continue
         available = ref.end_sec - ref.start_sec
         natural_span = min(max(available, MIN_CLIP_SEC), MAX_CLIP_SEC)
@@ -387,14 +396,17 @@ def _append_filler_clips(
             continue
         result.append(
             PlannedClip(
+                **_identity_fields(ref),
                 rel_path=ref.rel_path,
                 start_sec=round(start, 2),
                 end_sec=round(end, 2),
                 transition_in="crossfade",
                 reason="duration filler",
+                duration_filler=True,
             )
         )
         used_keys.add(key)
+        used_scenes.add(ref.scene_id)
     return result
 
 
@@ -439,14 +451,14 @@ async def _capture_order_map(conn: Any) -> dict[str, tuple[float, str]]:
 def _clip_bounds(
     clip: PlannedClip, refs: list[CandidateRef], durations: dict[str, float]
 ) -> tuple[float, float] | None:
-    ref = next((r for r in refs if r.rel_path == clip.rel_path), None)
+    ref = _reference_for_clip(clip, refs)
     if ref is None:
         return None
     if ref.kind == "photo":
         return 0.0, float("inf")
     file_duration = durations.get(clip.rel_path)
-    hard_high = min(ref.end_sec + 0.25, file_duration) if file_duration else ref.end_sec + 0.25
-    hard_low = max(0.0, ref.start_sec - 0.5)
+    hard_high = min(ref.end_sec, file_duration) if file_duration else ref.end_sec
+    hard_low = max(0.0, ref.start_sec)
     return hard_low, hard_high
 
 
@@ -503,9 +515,7 @@ async def generate_plan(
 ) -> tuple[EditPlan, list[CandidateRef]]:
     refs = await _load_candidate_refs(conn)
     if not refs:
-        raise PlannerInputError(
-            "no analyzed scenes available; run analysis before planning"
-        )
+        raise PlannerInputError("no analyzed scenes available; run analysis before planning")
     user_text = build_planner_prompt(refs, prompt, target_duration_sec)
     data = await provider.chat_json(
         system=PLANNER_SYSTEM,
@@ -519,10 +529,51 @@ async def generate_plan(
     try:
         # The request owns these fields. Apply them before validation/fitting so
         # even a missing or malformed model duration cannot change the target.
-        plan = EditPlan.model_validate({
-            **data, "prompt": prompt, "seed": seed, "target_duration_sec": target_duration_sec,
-        })
+        plan = EditPlan.model_validate(
+            {
+                **data,
+                "schema_version": "v1",
+                "prompt": prompt,
+                "seed": seed,
+                "target_duration_sec": target_duration_sec,
+            }
+        )
     except Exception as exc:
-        raise PlannerOutputError(f"plan failed validation: {exc}", raw=json.dumps(data)[:400]) from exc
+        raise PlannerOutputError(
+            f"plan failed validation: {exc}", raw=json.dumps(data)[:400]
+        ) from exc
+    if any(_reference_for_clip(clip, refs) is None for clip in plan.clips):
+        raise PlannerInputError(
+            "Plan has an unknown or ambiguous scene reference; regenerate with listed scene_id values"
+        )
     fixed = await validate_and_fix_plan(plan, refs, conn)
-    return fixed, refs
+    if any(not clip.source_hash for clip in fixed.clips):
+        raise PlannerInputError("Source identity is unverified; run Analyze before generating a new plan")
+    return EditPlan.model_validate({**fixed.model_dump(), "schema_version": "v2"}), refs
+
+
+def _reference_for_clip(clip: PlannedClip, refs: list[CandidateRef]) -> CandidateRef | None:
+    matches = [ref for ref in refs if ref.rel_path == clip.rel_path]
+    if clip.scene_id is not None:
+        matches = [ref for ref in matches if ref.scene_id == clip.scene_id]
+    elif len(matches) > 1:
+        matches = [
+            ref
+            for ref in matches
+            if ref.kind == "photo"
+            or (clip.start_sec >= ref.start_sec - 0.001 and clip.end_sec <= ref.end_sec + 0.001)
+        ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _bind_clip(clip: PlannedClip, ref: CandidateRef) -> PlannedClip:
+    return clip.model_copy(update=_identity_fields(ref))
+
+
+def _identity_fields(ref: CandidateRef) -> dict:
+    return {
+        "scene_id": ref.scene_id,
+        "source_file_id": ref.file_id,
+        "source_revision": ref.source_revision,
+        "source_hash": ref.source_hash,
+    }

@@ -13,7 +13,7 @@ from .core.logging import configure_logging
 from .core.paths import UnsharedPath
 from .jobs.bus import EventBus
 from .jobs.recovery import recover_interrupted
-from .jobs.worker import JobRunner, ProjectUnavailable
+from .jobs.worker import JobRunner, ProjectUnavailable, RunnerUnavailable
 
 
 def create_app() -> FastAPI:
@@ -28,7 +28,7 @@ def create_app() -> FastAPI:
         await migrate(registry, REGISTRY_SCHEMA)
         await recover_interrupted(registry, settings)
         bus = EventBus()
-        runner = JobRunner(registry, bus)
+        runner = JobRunner(registry, bus, queue_limit=settings.job_queue_limit)
         runner.start()
         app.state.settings = settings
         app.state.registry = registry
@@ -37,15 +37,23 @@ def create_app() -> FastAPI:
         try:
             yield
         finally:
-            await runner.stop()
-            await get_provider().close()
-            await registry.close()
+            try:
+                await runner.stop()
+            finally:
+                try:
+                    await get_provider().close()
+                finally:
+                    await registry.close()
 
     app = FastAPI(title="ReelMaker", lifespan=lifespan)
 
     @app.exception_handler(ProjectUnavailable)
     async def project_unavailable(request, exc):
         return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(RunnerUnavailable)
+    async def runner_unavailable(request, exc):
+        return JSONResponse(status_code=503, content={"detail": str(exc)}, headers={"Retry-After": "3"})
 
     @app.exception_handler(UnsharedPath)
     async def unshared_path(request, exc):
@@ -66,6 +74,9 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health")
     async def health():
+        readiness = app.state.runner.readiness()
+        if not readiness["ok"]:
+            return JSONResponse(status_code=503, content={"ok": False, "worker": readiness})
         return {"ok": True}
 
     return app

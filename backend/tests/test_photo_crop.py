@@ -77,7 +77,7 @@ def test_compute_focus_point_normalizes_face_center(tmp_path, monkeypatch):
     assert cy == pytest.approx(185.0 / 800.0)
 
 
-def test_compute_focus_point_applies_rotation_before_detection(tmp_path, monkeypatch):
+def test_compute_focus_point_applies_file_orientation_once_before_detection(tmp_path, monkeypatch):
     seen_shapes = []
 
     def fake_detect(img: np.ndarray) -> np.ndarray:
@@ -86,6 +86,12 @@ def test_compute_focus_point_applies_rotation_before_detection(tmp_path, monkeyp
 
     monkeypatch.setattr(photo_crop, "_detect_faces", fake_detect)
     photo = _save_jpg(tmp_path, 800, 400)
+    from PIL import Image
+
+    with Image.open(photo) as image:
+        exif = image.getexif()
+        exif[274] = 6
+        image.save(photo, exif=exif)
     photo_crop.compute_focus_point(photo, rotation=90)
     assert seen_shapes[0] == (800, 400)
 

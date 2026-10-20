@@ -1,7 +1,8 @@
-import asyncio
 from pathlib import Path
 
 from scenedetect import ContentDetector, detect
+
+from ..core.tasks import run_blocking
 
 MIN_SCENE_SEC = 0.4
 
@@ -22,7 +23,7 @@ async def detect_scenes(
 ) -> list[tuple[float, float]]:
     min_scene_len = max(8, int((fps or 30.0) * 0.5))
     try:
-        scenes = await asyncio.to_thread(detect_scenes_sync, path, 27.0, min_scene_len)
+        scenes = await run_blocking(detect_scenes_sync, path, 27.0, min_scene_len)
     except Exception as exc:
         raise RuntimeError(f"scene detection failed: {exc}") from exc
     if not scenes:

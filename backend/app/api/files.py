@@ -11,7 +11,8 @@ FILE_COLUMNS = (
     "id, rel_path, kind, size_bytes, mtime, duration_sec, error, analyzed_at, "
     "source_revision, analysis_revision, verified_at, "
     "CASE WHEN source_revision != analysis_revision THEN 'stale' "
-    "WHEN EXISTS(SELECT 1 FROM analysis_stages a WHERE a.file_id=files.id AND a.status='success') "
+    "WHEN EXISTS(SELECT 1 FROM analysis_stages a WHERE a.file_id=files.id AND a.status='legacy') THEN 'legacy' "
+    "WHEN EXISTS(SELECT 1 FROM analysis_stages a WHERE a.file_id=files.id AND a.stage!='orientation' AND a.status='success') "
     "THEN 'tracked' ELSE 'legacy' END AS provenance_status, "
     "(SELECT COUNT(*) FROM scenes s WHERE s.file_id = files.id) AS scene_count"
 )

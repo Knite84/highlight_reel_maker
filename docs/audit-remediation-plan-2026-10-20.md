@@ -1,7 +1,23 @@
 # Independent audit and proposed remediation plan
 
 Date: 2026-10-20. Reviewed checkout: `fc9938e` (`architectural review cleanup phase 1.`).
-Status: **package 1, Docker/lifecycle foundation, source/cache and HEIC/frame-ordering slices of package 2, and F05 duration authority implemented; remaining work is proposed**.
+
+Latest checkpoint: **A07/F15/F19 job-safety slice and F09 implemented**, following
+F10/F11. One atomic project admission boundary, bounded queue, worker readiness,
+terminal persistence retry without replay and cancellation ownership are verified.
+Explicit brief sequencing, shared timing and pre-render tradeoff review are implemented.
+See [job-and-planning-policy.md](job-and-planning-policy.md) and [status.md](status.md)
+for current evidence (202 backend/16 frontend tests) and limits. Broader F19 readiness,
+hard model termination and live/browser acceptance are not claimed complete.
+Status: **package 1, Docker/lifecycle foundation, source/cache, HEIC/frame ordering, F07 orientation, F05 duration authority, F06 scene identity, F10/F11 reporting, A07/F15/F19 job safeguards and F09 timing/ordering review implemented for the documented scopes; remaining work is proposed**.
+
+F10/F11 checkpoint (2026-10-20): scoped snapshots plus SSE share revision-checked
+state. Entry/reconnect/polling recover jobs; one terminal handler refreshes all relevant
+queries for done/failed/cancelled. UI shows errors, Cancel, retained analysis summaries,
+current-source row coverage and retry guidance. Analyze updates inventory counts before
+later stage failures. Existing results remain readable; registry revision is additive.
+See [status.md](status.md) for current evidence. Atomic admission, bounded queue,
+persistence-failure supervision and deeper model cancellation remain package 3 work.
 
 ## Accepted decisions and package 1 handoff (2026-10-20)
 
@@ -27,13 +43,23 @@ The user reprioritized shutdown/recovery and Docker before source invalidation.
 Web app, FFmpeg and SigLIP run in Docker; Unsloth stays external on Windows. Files
 remain in host bind mounts. Compose ownership/readiness supersedes the interim PID
 launcher described above. F03/F04 and subprocess portions of A01/A02 are addressed;
-F10/F14/F15/F17 have partial improvements. Full frontend state recovery remains open.
+F10/F14/F15/F17 had partial improvements at that checkpoint. The later F10/F11
+checkpoint above adds frontend state recovery and structured reporting.
 See [status.md](status.md) for cross-platform verification and [docker.md](docker.md)
 for operation/recovery. A real NVENC export exposed Docker libplacebo block artifacts; container rendering
 now uses CPU zscale with NVENC encoding. Three corrected frames were clean of blocks,
 but the more washed-out appearance needs broader HDR color acceptance. All other audit contracts remain in the backlog.
 
 ## Assessment
+
+Current checkpoint 2026-10-20: F07 display orientation and F06 stable scene/source
+references are implemented. V2 plans retain the chosen later interval; v1 readers
+remain, with ambiguity rejected. Selective orientation upgrades preserve scene IDs,
+knowledge history and old artifacts. Source-time sorting now follows filler insertion;
+narrative exceptions, pacing disclosures and shared timing ownership remain F09 work.
+See [media-contracts.md](media-contracts.md) and [status.md](status.md) for contracts,
+160-test cross-platform verification and visual QA limits. Earlier checkpoints below
+retain their original scope and should not be read as the current remaining backlog.
 
 Duration checkpoint 2026-10-20: F05 request authority is implemented before schema
 validation and fitting. Six provider-to-persistence regressions confirm a 45-second
@@ -137,20 +163,20 @@ These are implementation priorities, not CVSS security scores.
 | F03 — restart recovery | Confirmed by startup/worker inspection: queued handlers are memory-only; old active rows remain. | P1, package 3 |
 | F04 — render lifecycle/output replacement | Confirmed by control flow. Preparation and missing-output failures bypass edit failure updates; `-y` overwrites an existing profile output. | P1, package 4 |
 | F05 — request duration authority | Implemented 2026-10-20: request duration applied before validation/fitting; saved JSON/column and fitted timing covered by six regressions. Existing plans are unchanged. | Done; remaining package 5 work stays open |
-| F06 — scene identity | Confirmed: first matching path supplies bounds although a video has several scene candidates. | P1, package 5 |
-| F07 — orientation | Reproduced for EXIF 6. Mirrored orientations are not represented by degree-only metadata. Video decoder behavior also needs verification. | P1, package 2 |
+| F06 — scene identity | Implemented 2026-10-20: v2 scene/file/revision/hash references, exact scene fitting, render validation, v1 compatibility and ambiguity rejection. | Done; broader package 5 policy remains |
+| F07 — orientation | Implemented 2026-10-20: canonical photo pixels including EXIF mirrors, HEIF transforms, explicit video analysis rotation and selective visual upgrade. | Done for documented supported transforms; HDR/VFR/mirrored-video limits remain |
 | F08 — relevance omitted from shortlist | Confirmed: quality ranking chooses 60 before the brief reaches the planner. | P2, package 6 |
-| F09 — fitting policy/chronology | Confirmed: filler follows sorting; freeze fallback and repeated fitting alter intent without explanations. | P2, package 5 |
-| F10 — incomplete analysis reported as done | Confirmed: description failures can be omitted from summary; UI does not expose structured results; Analyze discards scan counts. | P1 for honest reporting, package 3 |
-| F11 — conflicting UI job states | Confirmed by watchers/store inspection; no durable hydration and stale SSE takes precedence. | P1 for reliable recovery, package 3 |
+| F09 — fitting policy/chronology | Implemented conservative explicit brief order, complete filler ordering, shared timing and token-bound pre-render duration disclosure. Old plans remain unchanged. | Automated acceptance; live creative/browser validation pending |
+| F10 — incomplete analysis reported as done | Implemented structured errors/coverage, visible retry guidance and committed Analyze inventory counts; cached work is distinct from per-run counts. | Automated backend/store/template verification; interactive acceptance pending |
+| F11 — conflicting UI job states | Implemented one revision-checked job collection, scoped durable hydration/polling, reconnect refresh and one terminal handler for every outcome. | Automated transport/timer/template verification; interactive acceptance pending |
 | F12 — source preview | Confirmed: photos are assigned to a video element; Stop does not stop media; pending loads lack error/unmount handling. | P2, package 7 |
 | F13 — final export unavailable in UI | Confirmed: UI always requests proxy; one edit render pointer hides artifact history. | P2, package 7 |
 | F14 — capability probing | Confirmed: compiled NVENC presence is treated as availability; HDR probe does not exercise the generated media filter. | P2, package 4 |
-| F15 — cancellation/process handling | Confirmed by control flow: cooperative flags do not interrupt model/render work; stderr is drained after wait. | P1, packages 3–4 |
+| F15 — cancellation/process handling | Encoder kill/reap and bounded output were fixed earlier; thread ownership now waits for the active blocking call before cancellation releases the job. | Implemented safe ownership; hard thread/model termination remains unsupported |
 | F16 — delete/recreate identity | Implemented in package 1 with archive/recovery, new storage identity, active-job exclusion, and guarded purge. | Complete for this slice |
 | F17 — local/offline promises | Confirmed: configurable remote inference can receive images; weights may download at first use. | P1 policy boundary, package 8 |
 | F18 — search/browsing limits | Confirmed: only embedded scenes; newest 4,000 before ranking; missing pagination/completeness messages. | P2, packages 6–7 |
-| F19 — async/resource ownership | Partly corrected above; blocking model loading/tag inference and unclosed cached provider remain. | P2, packages 3 and 8 |
+| F19 — async/resource ownership | Model work is off-loop; provider closure is lifecycle-owned and registry cleanup survives provider failure. Atomic admission, worker failure readiness and deferred terminal persistence are implemented. | Remaining model/offline capability readiness belongs to package 8 |
 | F20 — scripts/test coverage | Process ownership protection implemented in package 1; readiness and browser suite remain open. | Remaining work in package 9 |
 | F21 — unsupported schema/docs | Confirmed: music ignored, seed 0 replaced, no model seed passed, duplicated frontend contracts. | P2 contracts / P3 cleanup, packages 5 and 9 |
 

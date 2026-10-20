@@ -1,4 +1,3 @@
-import asyncio
 import json
 import math
 import subprocess
@@ -7,6 +6,7 @@ from pathlib import Path
 
 import xxhash
 
+from ..core.tasks import run_blocking
 from .images import image_size_sync
 
 _TIMEOUT_SECONDS = 600
@@ -23,7 +23,7 @@ def _run_sync(cmd: list[str]) -> tuple[int, str, str]:
 
 
 async def run_tool(cmd: list[str]) -> tuple[int, str, str]:
-    return await asyncio.to_thread(_run_sync, cmd)
+    return await run_blocking(_run_sync, cmd)
 
 
 def xxh3_file_sync(path: Path, chunk_size: int = 1 << 20) -> str:
@@ -35,7 +35,7 @@ def xxh3_file_sync(path: Path, chunk_size: int = 1 << 20) -> str:
 
 
 async def checksum_file(path: Path) -> str:
-    return await asyncio.to_thread(xxh3_file_sync, path)
+    return await run_blocking(xxh3_file_sync, path)
 
 
 def _parse_fps(value: str | None) -> float | None:
@@ -91,12 +91,16 @@ def parse_probe_data(data: dict) -> dict:
         except (TypeError, ValueError):
             continue
     rotation = 0
+    has_display_rotation = False
     for side in video.get("side_data_list", []) or []:
         if "rotation" in side:
-            rotation = int(side["rotation"]) % 360
+            has_display_rotation = True
+            # Display-matrix angles are counterclockwise; our explicit decoder
+            # transform is clockwise. Legacy rotate tags already use clockwise.
+            rotation = -int(side["rotation"]) % 360
     tags = video.get("tags") or {}
     raw_rotate = tags.get("rotate")
-    if rotation == 0 and raw_rotate is not None:
+    if not has_display_rotation and raw_rotate is not None:
         rotation = int(raw_rotate) % 360
     return {
         "duration_sec": duration,
@@ -161,7 +165,7 @@ def exiftool_metadata_sync(path: Path) -> dict:
 
 async def extract_metadata(path: Path, kind: str) -> dict:
     if kind == "video":
-        meta = await asyncio.to_thread(probe_media_sync, path)
+        meta = await run_blocking(probe_media_sync, path)
     else:
         meta = {
             "duration_sec": None,
@@ -175,7 +179,7 @@ async def extract_metadata(path: Path, kind: str) -> dict:
             "captured_at": None,
             "rotation": 0,
         }
-    exif = await asyncio.to_thread(exiftool_metadata_sync, path)
+    exif = await run_blocking(exiftool_metadata_sync, path)
     for key, value in exif.items():
         if value is None:
             continue
@@ -183,20 +187,7 @@ async def extract_metadata(path: Path, kind: str) -> dict:
             continue
         meta[key] = value
     if meta["width"] is None and meta["height"] is None and kind == "photo":
-        meta["width"], meta["height"] = await asyncio.to_thread(image_size_sync, path)
-        exif_rotation = await asyncio.to_thread(_exif_orientation_sync, path)
-        meta["rotation"] = exif_rotation
+        meta["width"], meta["height"] = await run_blocking(image_size_sync, path)
+        # Photo dimensions/pixels are display-oriented, including EXIF mirrors.
+        meta["rotation"] = 0
     return meta
-
-
-def _exif_orientation_sync(path: Path) -> int:
-    code, out, _err = _run_sync(["exiftool", "-j", "-n", "-Orientation", str(path)])
-    if code != 0 or not out.strip():
-        return 0
-    try:
-        entries = json.loads(out)
-        orientation = entries[0].get("Orientation", 1) if entries else 1
-    except (json.JSONDecodeError, IndexError):
-        return 0
-    mapping = {6: 90, 8: 270, 3: 180}
-    return mapping.get(int(orientation), 0)

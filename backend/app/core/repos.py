@@ -6,7 +6,7 @@ import aiosqlite
 
 JOB_COLUMNS = (
     "id, project_id, kind, status, progress, done, total, message, "
-    "result_json, error, created_at, started_at, finished_at"
+    "result_json, error, created_at, started_at, finished_at, revision"
 )
 
 
@@ -135,9 +135,17 @@ async def get_job(conn: aiosqlite.Connection, job_id: int) -> dict[str, Any] | N
     return _dict(await cur.fetchone())
 
 
-async def list_jobs(conn: aiosqlite.Connection, limit: int = 50) -> list[dict[str, Any]]:
+async def list_jobs(
+    conn: aiosqlite.Connection, limit: int = 50, project_id: int | None = None
+) -> list[dict[str, Any]]:
+    where = "WHERE project_id = ?" if project_id is not None else ""
+    params = (project_id,) if project_id is not None else ()
     cur = await conn.execute(
-        f"SELECT {JOB_COLUMNS} FROM jobs ORDER BY id DESC LIMIT ?", (limit,)
+        f"SELECT {JOB_COLUMNS} FROM jobs WHERE id IN "
+        f"(SELECT id FROM jobs {where} ORDER BY id DESC LIMIT ?) "
+        f"OR (status IN ('queued','running') {'AND project_id = ?' if params else ''}) "
+        "ORDER BY id DESC",
+        (*params, limit, *params),
     )
     rows = await cur.fetchall()
     return [dict(r) for r in rows]
@@ -160,6 +168,6 @@ async def update_job(
 ) -> dict[str, Any] | None:
     assignments = ", ".join(f"{key} = ?" for key in fields)
     params = list(fields.values()) + [job_id]
-    await conn.execute(f"UPDATE jobs SET {assignments} WHERE id = ?", params)
+    await conn.execute(f"UPDATE jobs SET {assignments}, revision = revision + 1 WHERE id = ?", params)
     await conn.commit()
     return await get_job(conn, job_id)

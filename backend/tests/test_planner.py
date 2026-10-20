@@ -102,6 +102,7 @@ async def _seed_candidates_db(db_path):
         " ('v2.mp4','video',20,2,80.0,'2026-07-11T09:00:00')"
     )
     for file_id in (1, 2):
+        await conn.execute("UPDATE files SET xxhash=? WHERE id=?", (f"fixture-source-{file_id}", file_id))
         for scene_index in range(5):
             start = scene_index * 10
             await conn.execute(
@@ -189,7 +190,7 @@ def test_requested_duration_controls_fitting_and_persisted_plan(tmp_path, monkey
         await conn.close()
         result = await plans.plan_job_handler(Context(), {
             "db_path": str(db), "prompt": "requested brief",
-            "target_duration_sec": 45.0, "seed": 7,
+            "target_duration_sec": 45.0, "seed": 0,
         })
         conn = await connect(db)
         try:
@@ -197,7 +198,7 @@ def test_requested_duration_controls_fitting_and_persisted_plan(tmp_path, monkey
             plan = EditPlan.model_validate(json.loads(row["plan_json"]))
             assert row["target_duration_sec"] == plan.target_duration_sec == 45.0
             assert row["prompt"] == plan.prompt == "requested brief"
-            assert plan.seed == 7
+            assert plan.seed == 0
             assert expected_plan_duration(plan.clips) == pytest.approx(45.0, abs=1 / 30)
         finally:
             await conn.close()

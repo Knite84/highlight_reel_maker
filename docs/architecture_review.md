@@ -1,5 +1,26 @@
 # Architecture and product effectiveness review
 
+> A07/F15/F19 + F09 checkpoint 2026-10-20: atomic cross-kind project admission,
+> bounded queue, persistence retry without handler replay, worker readiness and safe
+> thread cancellation ownership are implemented. New plans honor explicit brief order;
+> shared timing and pre-render disclosure/token checks cover fitting tradeoffs.
+> See [job-and-planning-policy.md](job-and-planning-policy.md) and [status.md](status.md)
+> for 202-test backend/16-test frontend evidence and limits. Original evidence follows;
+> hard model termination, unrestricted directive understanding and live acceptance
+> are not claimed, and broader readiness/maintenance findings remain.
+
+> F10/F11 checkpoint 2026-10-20: project-scoped durable job hydration, revision-checked
+> SSE/poll merging, reconnect recovery, one terminal refresh path and visible errors/
+> cancellation are implemented. Analyze adds current-source row coverage and publishes
+> committed scan counts before later failures. See [status.md](status.md) for tests
+> and limits. Atomic admission/worker supervision remain A07/F15/F19 follow-ups;
+> this checkpoint does not claim all of package 3 is complete.
+
+> F07/F06 checkpoint 2026-10-20: canonical display orientation and v2 scene/source
+> references are implemented, with selective cache upgrades and v1 compatibility.
+> See [media-contracts.md](media-contracts.md) and [status.md](status.md) for scope,
+> 160-test verification, visual evidence and remaining limits. Original findings follow.
+
 > Duration checkpoint 2026-10-20: F05 is implemented for newly generated plans.
 > Request duration is authoritative before validation/fitting; saved JSON/column and
 > fitted timing have regression coverage. F06/F09 and broader timing policy remain
@@ -164,7 +185,12 @@ ffprobe; `rendered_duration_sec` currently records the graph's calculated durati
 **Acceptance:** fake model returns a different target; the normalized plan and probed
 video still match the request within the documented frame/container tolerance.
 
-### F06 · P1 · Scene identity is lost when a video has multiple candidates
+### F06 · P1 · Scene identity is lost when a video has multiple candidates — fixed 2026-10-20
+
+New v2 plans bind exact scenes and source identity through fitting and rendering.
+Legacy unique intervals remain readable; ambiguous references require replanning.
+The original evidence below is retained as history; current tests render the selected
+later blue interval and check source-time ordering after selection/filler insertion.
 
 **Evidence:** `planner/generate.py`, `validate_and_fix_plan` and `_clip_bounds`, locate
 the first candidate with a matching `rel_path`. Multiple scenes share that path, but
@@ -181,7 +207,12 @@ within a source by scene/clip time.
 **Acceptance:** a video with candidates at 0–8s and 40–48s can select and retain the
 second interval; a plan containing both plays them in the intended order.
 
-### F07 · P1 · Photo loading can apply EXIF orientation twice
+### F07 · P1 · Photo loading can apply EXIF orientation twice — fixed 2026-10-20
+
+Shared display decoding now applies photo orientation once and renders normalized PNGs.
+EXIF 1–8, HEIF container transforms and quarter-turn video matrices have render tests;
+visual descendants upgrade selectively without changing scene IDs. The original defect
+evidence follows; supported transforms and QA limits are in the media contract guide.
 
 **Evidence:** `pipeline/frames_cv.py`, `_load_image_bgr`, returns `False` for the
 already-transposed flag after `cv2.imread(..., IMREAD_COLOR)`. The synthetic orientation-6

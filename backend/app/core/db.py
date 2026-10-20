@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     status TEXT NOT NULL DEFAULT 'queued'
         CHECK (status IN ('queued', 'running', 'done', 'failed', 'cancelled')),
     progress REAL NOT NULL DEFAULT 0,
+    revision INTEGER NOT NULL DEFAULT 0,
     done INTEGER NOT NULL DEFAULT 0,
     total INTEGER,
     message TEXT,
@@ -166,6 +167,8 @@ async def connect(path: Path) -> aiosqlite.Connection:
 
 async def migrate(conn: aiosqlite.Connection, schema: str) -> None:
     await conn.executescript(schema)
+    if schema == REGISTRY_SCHEMA:
+        await _ensure_column(conn, "jobs", "revision", "INTEGER NOT NULL DEFAULT 0")
     await conn.commit()
 
 

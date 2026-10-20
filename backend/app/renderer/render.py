@@ -9,8 +9,12 @@ from ..core.config import get_settings
 from ..core.db import connect, migrate_project
 from ..core.paths import host_path, local_path
 from ..core.processes import run_process
+from ..core.tasks import run_blocking
+from ..pipeline.images import image_size_sync, prepare_display_photo
 from ..pipeline.metadata import checksum_file, parse_probe_data
 from ..pipeline.provenance import mark_source_edits
+from ..planner.identity import validate_plan_identity
+from ..planner.review import render_review
 from ..planner.schemas import EditPlan
 from .encode import canvas_for, resolve_encoder
 from .filtergraph import build_render_args
@@ -83,7 +87,7 @@ async def render_job_handler(ctx: Any, payload: dict) -> dict:
 
 async def _render_attempt(ctx, payload, db_path, edit_id, temporary_files):
     media_root = local_path(payload["media_root"]).resolve()
-    export_dir = local_path(payload["export_dir"])
+    export_dir = local_path(payload["export_dir"]).resolve()
     export_dir.mkdir(parents=True, exist_ok=True)
     profile = payload["profile"]
     attempt = uuid4().hex
@@ -105,6 +109,11 @@ async def _render_attempt(ctx, payload, db_path, edit_id, temporary_files):
         await conn.execute("UPDATE edits SET status='rendering',error=NULL WHERE id=?", (edit_id,))
         await conn.commit()
         plan = EditPlan.model_validate(json.loads(row["plan_json"]))
+        await validate_plan_identity(conn, plan)
+        if "review_token" in payload:
+            review = await render_review(conn, row["plan_json"], profile)
+            if payload["review_token"] != review["token"]:
+                raise RuntimeError("Plan changed after duration review; review it again before rendering")
         photos = await (
             await conn.execute(
                 "SELECT rel_path,COALESCE(rotation,0) AS rotation FROM files WHERE kind='photo'"
@@ -128,7 +137,11 @@ async def _render_attempt(ctx, payload, db_path, edit_id, temporary_files):
         source = (media_root / rel).resolve()
         if not source.is_relative_to(media_root) or not source.is_file():
             raise RuntimeError(f"Source missing or outside media folder: {rel}")
-        meta = await probe_media(source)
+        if rel in image_rels:
+            await run_blocking(image_size_sync, source)
+            meta = {"has_audio": False, "is_hdr": False}
+        else:
+            meta = await probe_media(source)
         if not meta["has_audio"]:
             no_audio_rels.add(rel)
         if meta["is_hdr"]:
@@ -138,7 +151,13 @@ async def _render_attempt(ctx, payload, db_path, edit_id, temporary_files):
     focus = {}
     photo_sources = {rel: path for rel, path in sources.items() if rel in image_rels}
     if photo_sources:
-        focus = await asyncio.to_thread(compute_focus_points, photo_sources, rotations)
+        focus = await run_blocking(compute_focus_points, photo_sources, rotations)
+    render_sources = dict(sources)
+    for index, (rel, source) in enumerate(photo_sources.items()):
+        normalized = export_dir / f".{attempt}.photo-{index}.png"
+        temporary_files.append(normalized)
+        await run_blocking(prepare_display_photo, source, normalized)
+        render_sources[rel] = normalized
     await _verify_sources(db_path, sources, known_sources)
     ctx.check_cancelled()
     encoder, flags = await resolve_encoder(profile)
@@ -167,7 +186,7 @@ async def _render_attempt(ctx, payload, db_path, edit_id, temporary_files):
     for engine in engines:
         args, total_seconds = build_render_args(
             plan,
-            sources,
+            render_sources,
             canvas_w=width,
             canvas_h=height,
             encoder=encoder,
@@ -178,7 +197,7 @@ async def _render_attempt(ctx, payload, db_path, edit_id, temporary_files):
             no_audio_rels=no_audio_rels,
             hdr_rels=hdr_rels,
             hdr_engine=engine,
-            photo_rotations=rotations,
+            photo_rotations={},
             photo_focus=focus,
         )
         await ctx.progress(
@@ -206,6 +225,11 @@ async def _render_attempt(ctx, payload, db_path, edit_id, temporary_files):
 
     ctx.check_cancelled()
     await _verify_sources(db_path, sources, known_sources)
+    verification = await connect(db_path)
+    try:
+        await validate_plan_identity(verification, plan)
+    finally:
+        await verification.close()
     if not temporary_output.is_file() or temporary_output.stat().st_size == 0:
         raise RuntimeError("Render produced no nonempty output")
     measured = await probe_media(temporary_output)

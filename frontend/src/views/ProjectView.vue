@@ -9,13 +9,16 @@ import type {
   Project,
   ReelPlan,
   ReelPlanDetail,
+  RenderReview,
   SceneResult,
   SystemStatus,
   TagCount,
 } from '@/api/types'
 import PlanPreview from '@/components/PlanPreview.vue'
+import RenderReviewCard from '@/components/RenderReview.vue'
 import StatusPill from '@/components/StatusPill.vue'
 import { useJobStore } from '@/stores/jobs'
+import { isActiveJob } from '@/stores/jobState'
 
 type ProjectDetail = Project & { files_total: number }
 
@@ -24,7 +27,24 @@ const projectId = Number(route.params.id)
 const queryClient = useQueryClient()
 const jobStore = useJobStore()
 
-onMounted(() => jobStore.connect())
+let stopObserving: (() => void) | null = null
+let refreshScheduled = false
+onMounted(() => {
+  stopObserving = jobStore.observe(projectId, () => {
+    // Snapshots may contain many terminal jobs; refresh once per batch.
+    if (refreshScheduled) return
+    refreshScheduled = true
+    queueMicrotask(() => {
+      refreshScheduled = false
+      void refreshAfterJob()
+    })
+  })
+  jobStore.connect(projectId)
+})
+onBeforeUnmount(() => {
+  stopObserving?.()
+  jobStore.disconnect(projectId)
+})
 
 const { data: project } = useQuery({
   queryKey: ['project', projectId],
@@ -41,131 +61,81 @@ const { data: systemStatus } = useQuery({
   queryFn: () => api.get<SystemStatus>('/system/status'),
 })
 
-const activeJobId = ref<number | null>(null)
 const actionError = ref('')
 const busyAction = ref<'analyze' | null>(null)
 const deepVerify = ref(false)
+const cancelling = ref<number | null>(null)
+const topJob = computed(() => jobStore.latest(projectId, ['scan', 'analyze']))
+const planJob = computed(() => jobStore.latest(projectId, ['plan']))
+const activeRenderJob = computed(() => jobStore.latest(projectId, ['render']))
+const projectBusy = computed(() => [...jobStore.jobs.values()].some(
+  job => job.project_id === projectId && isActiveJob(job),
+))
+const jobCards = computed(() => [topJob.value, planJob.value, activeRenderJob.value].filter(
+  (job): job is Job => job !== null,
+))
 
-const job = computed(() => (activeJobId.value === null ? null : jobStore.byId(activeJobId.value)))
+function jobPercent(job: Job) {
+  const fraction = job.total && job.total > 0 ? job.done / job.total : job.progress
+  return Math.max(0, Math.min(100, Math.round(fraction * 100)))
+}
 
-const passiveJob = computed(() => {
-  let latest: Job | null = null
-  for (const candidate of jobStore.jobs.values()) {
-    if (
-      candidate.project_id === projectId &&
-      (candidate.status === 'queued' || candidate.status === 'running')
-    ) {
-      if (latest === null || candidate.id > latest.id) latest = candidate
-    }
+function jobResult(job: Job): Record<string, unknown> | null {
+  try {
+    const result = JSON.parse(job.result_json ?? 'null')
+    return result && typeof result === 'object' && !Array.isArray(result) ? result : null
+  } catch { return null }
+}
+
+function resultCounts(job: Job): string {
+  const result = jobResult(job)
+  if (!result) return ''
+  const labels: Record<string, string> = {
+    videos: 'videos', photos: 'photos', removed: 'removed from inventory',
+    metadata: 'metadata files', scenes: 'scenes', visuals: 'visuals',
+    embedded: 'embeddings', described: 'descriptions',
   }
-  return latest
-})
+  return Object.entries(labels).filter(([key]) => typeof result[key] === 'number')
+    .map(([key, label]) => `${result[key]} ${label}`).join(' · ')
+}
 
-const displayedJob = computed(() => job.value ?? passiveJob.value ?? polledJob.value)
+function resultErrors(job: Job): { file: string; error: string }[] {
+  const errors = jobResult(job)?.errors
+  if (!Array.isArray(errors)) return []
+  return errors.filter(entry => entry && typeof entry.error === 'string')
+}
 
-const activePlanJob = computed(() => {
-  const current = displayedJob.value
-  return current && current.kind === 'plan' && current.status !== 'done' && current.status !== 'failed'
-    ? current
-    : null
-})
+function coverageLabel(job: Job): string {
+  const coverage = jobResult(job)?.coverage as Record<string, number> | undefined
+  if (!coverage) return ''
+  return `Stored knowledge for current sources: ${coverage.files_current}/${coverage.files_total} files; ` +
+    `${coverage.scenes_current} scenes; ${coverage.scenes_embedded}/${coverage.scenes_current} with embeddings; ` +
+    `${coverage.scenes_described}/${coverage.scenes_current} with descriptions. ${coverage.files_failed} files report errors.`
+}
 
-const waitingForPlanner = computed(
-  () =>
-    activeJobId.value !== null &&
-    activePlanJob.value === null &&
-    (polledJob.value === null ||
-      polledJob.value.status === 'queued' ||
-      polledJob.value.status === 'running') &&
-    (job.value === null || job.value.kind === 'plan'),
-)
-
-const planningPercent = computed(() => {
-  const current = activePlanJob.value
-  if (!current) return null
-  if (current.total && current.total > 0) {
-    return Math.min(100, Math.round((current.done / current.total) * 100))
-  }
-  return Math.round(current.progress * 100)
-})
-
-const polledJob = ref<Job | null>(null)
-let pollTimer: number | null = null
-
-function stopPolling() {
-  if (pollTimer !== null) {
-    clearInterval(pollTimer)
-    pollTimer = null
-  }
+async function cancelJob(id: number) {
+  cancelling.value = id
+  actionError.value = ''
+  try { await jobStore.cancel(id) }
+  catch (e) { actionError.value = e instanceof Error ? e.message : String(e) }
+  finally { cancelling.value = null }
 }
 
 async function refreshAfterJob() {
   await Promise.all([
-    queryClient.invalidateQueries({ queryKey: ['files', projectId] }),
-    queryClient.invalidateQueries({ queryKey: ['project', projectId] }),
-    queryClient.invalidateQueries({ queryKey: ['tags', projectId] }),
-    queryClient.invalidateQueries({ queryKey: ['scene-search', projectId] }),
-    queryClient.invalidateQueries({ queryKey: ['plans', projectId] }),
-    queryClient.invalidateQueries({ queryKey: ['plan-detail'] }),
+    queryClient.invalidateQueries({ queryKey: ['projects'] }),
+    ...['files', 'project', 'tags', 'scene-search', 'plans', 'plan-detail'].map(key =>
+      queryClient.invalidateQueries({ queryKey: [key, projectId] }),
+    ),
   ])
 }
-
-watch(activeJobId, (id) => {
-  stopPolling()
-  if (id === null) return
-  pollTimer = window.setInterval(async () => {
-    try {
-      const fresh = await api.get<Job>(`/jobs/${id}`)
-      polledJob.value = fresh
-      if (fresh.status === 'done' || fresh.status === 'failed' || fresh.status === 'cancelled') {
-        stopPolling()
-        if (!handledJobIds.has(fresh.id)) {
-          handledJobIds.add(fresh.id)
-          await refreshAfterJob()
-        }
-      }
-    } catch {}
-  }, 3000)
-}, { immediate: true })
-
-onBeforeUnmount(stopPolling)
-
-const handledJobIds = new Set<number>()
-
-watch(displayedJob, (current, previous) => {
-  if (
-    current &&
-    current.status === 'done' &&
-    (!previous || previous.id !== current.id) &&
-    !handledJobIds.has(current.id)
-  ) {
-    handledJobIds.add(current.id)
-    void Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['files', projectId] }),
-      queryClient.invalidateQueries({ queryKey: ['project', projectId] }),
-      queryClient.invalidateQueries({ queryKey: ['tags', projectId] }),
-      queryClient.invalidateQueries({ queryKey: ['scene-search', projectId] }),
-    ])
-  }
-})
-
-const finished = computed(() => job.value?.status === 'done')
-
-watch(finished, async (isDone, wasDone) => {
-  if (isDone && !wasDone) {
-    if (!handledJobIds.has(job.value!.id)) {
-      handledJobIds.add(job.value!.id)
-      await refreshAfterJob()
-    }
-  }
-})
 
 async function runAnalysis() {
   busyAction.value = 'analyze'
   actionError.value = ''
   try {
     const result = await api.post<{ job_id: number }>(`/projects/${projectId}/analyze?deep_verify=${deepVerify.value}`)
-    activeJobId.value = result.job_id
+    await jobStore.track(result.job_id)
   } catch (e) {
     actionError.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -185,7 +155,7 @@ async function generatePlan() {
       prompt: promptText.value,
       target_duration_sec: targetDuration.value,
     })
-    activeJobId.value = result.job_id
+    await jobStore.track(result.job_id)
   } catch (e) {
     actionError.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -235,61 +205,47 @@ const activePlanDetail = computed(() => planDetailQuery.data.value ?? null)
 
 async function renderPlan(id: number) {
   actionError.value = ''
+  pendingRender.value = null
+  reviewingReelId.value = id
+  try {
+    const review = await api.get<RenderReview>(`/projects/${projectId}/plans/${id}/render-review?profile=proxy`)
+    pendingRender.value = { id, review }
+  } catch (e) {
+    actionError.value = e instanceof Error ? e.message : String(e)
+  } finally { reviewingReelId.value = null }
+}
+
+const pendingRender = ref<{ id: number; review: RenderReview } | null>(null)
+const reviewingReelId = ref<number | null>(null)
+const submittingRender = ref(false)
+
+async function confirmRender() {
+  const selected = pendingRender.value
+  if (!selected) return
+  const id = selected.id
+  submittingRender.value = true
+  actionError.value = ''
   renderingReelId.value = id
   try {
     const result = await api.post<{ job_id: number }>(
       `/projects/${projectId}/plans/${id}/render`,
-      { profile: 'proxy' },
+      { profile: selected.review.profile, review_token: selected.review.token },
     )
-    activeJobId.value = result.job_id
+    await jobStore.track(result.job_id)
+    pendingRender.value = null
   } catch (e) {
     renderingReelId.value = null
     actionError.value = e instanceof Error ? e.message : String(e)
-  }
+    pendingRender.value = null
+  } finally { submittingRender.value = false }
 }
 
 const renderingReelId = ref<number | null>(null)
 
-const activeRenderJob = computed(() => {
-  const current = displayedJob.value
-  return current && current.kind === 'render' ? current : null
-})
-
-const renderInProgress = computed(
-  () =>
-    activeRenderJob.value !== null &&
-    activeRenderJob.value.status !== 'done' &&
-    activeRenderJob.value.status !== 'failed' &&
-    activeRenderJob.value.status !== 'cancelled',
-)
-
-const renderPercent = computed(() => {
-  const current = activeRenderJob.value
-  if (!current) return 0
-  if (current.total && current.total > 0) {
-    return Math.min(100, Math.round((current.done / current.total) * 100))
-  }
-  return Math.round(current.progress * 100)
-})
-
-watch(renderInProgress, (active, wasActive) => {
-  if (!active && wasActive && activeRenderJob.value?.status === 'done') {
-    renderingReelId.value = null
-  }
-})
-
-const topJob = computed(() => {
-  const current = displayedJob.value
-  return current && (current.kind === 'scan' || current.kind === 'analyze') ? current : null
-})
-
-const topPercent = computed(() => {
-  const current = topJob.value
-  if (!current) return 0
-  if (current.total && current.total > 0) {
-    return Math.min(100, Math.round((current.done / current.total) * 100))
-  }
-  return Math.round(current.progress * 100)
+const renderInProgress = computed(() => activeRenderJob.value !== null && isActiveJob(activeRenderJob.value))
+const renderPercent = computed(() => activeRenderJob.value ? jobPercent(activeRenderJob.value) : 0)
+watch(activeRenderJob, current => {
+  if (current && !isActiveJob(current)) renderingReelId.value = null
 })
 
 async function refreshStatus() {
@@ -371,9 +327,9 @@ const fileList = computed(() => filesQuery.data.value ?? [])
       <h1>{{ project.name }}</h1>
       <div class="actions">
         <label title="Reads every source file to detect changes that preserve file size and modification time. Unchanged analysis is reused.">
-          <input v-model="deepVerify" type="checkbox" :disabled="busyAction !== null" /> Verify file contents
+          <input v-model="deepVerify" type="checkbox" :disabled="busyAction !== null || projectBusy" /> Verify file contents
         </label>
-        <button :disabled="busyAction !== null" @click="runAnalysis">
+        <button :disabled="busyAction !== null || projectBusy" @click="runAnalysis">
           {{ busyAction === 'analyze' ? 'Analyzing…' : 'Analyze' }}
         </button>
       </div>
@@ -395,21 +351,38 @@ const fileList = computed(() => filesQuery.data.value ?? [])
       <button class="ghost refresh-link" @click="refreshStatus">Refresh</button>
     </div>
 
-    <div v-if="topJob" class="card progress">
+    <p v-if="jobStore.syncError" role="status" class="muted">{{ jobStore.syncError }}</p>
+    <div v-for="current in jobCards" :key="current.id" class="card progress" aria-live="polite">
       <div class="progress-head">
-        <span>{{ topJob.kind }} {{ topJob.status }}</span>
-        <span>{{ topJob.done }}/{{ topJob.total ?? '?' }}</span>
+        <span>{{ current.kind }} — {{ current.status }}</span>
+        <span v-if="isActiveJob(current)">{{ current.done }}/{{ current.total ?? '?' }}</span>
+        <button v-if="isActiveJob(current)" :disabled="cancelling === current.id" @click="cancelJob(current.id)">
+          {{ cancelling === current.id ? 'Requesting cancellation…' : 'Cancel' }}
+        </button>
       </div>
-      <div class="bar"><div class="bar-fill" :style="{ width: topPercent + '%' }" /></div>
-      <p class="muted">{{ topJob.message }}</p>
-      <p v-if="topJob.error" class="error" :title="topJob.error">
-        {{ topJob.error.slice(0, 300) }}{{ (topJob.error.length ?? 0) > 300 ? '…' : '' }}
-      </p>
+      <div v-if="isActiveJob(current)" class="bar" role="progressbar" :aria-label="current.kind" :aria-valuenow="jobPercent(current)" aria-valuemin="0" aria-valuemax="100">
+        <div class="bar-fill" :style="{ width: jobPercent(current) + '%' }" />
+      </div>
+      <p v-if="isActiveJob(current)" class="muted">{{ current.message }}</p>
+      <p v-if="current.error" class="error">{{ current.error }}</p>
+      <template v-if="!isActiveJob(current) && (current.kind === 'analyze' || current.kind === 'scan')">
+        <p v-if="coverageLabel(current)" class="muted">{{ coverageLabel(current) }}</p>
+        <p v-if="resultCounts(current)" class="muted">{{ current.kind === 'analyze' ? 'Work completed in this run (cached work is reused):' : 'Inventory:' }} {{ resultCounts(current) }}</p>
+        <details v-if="resultErrors(current).length">
+          <summary>{{ resultErrors(current).length }} analysis issue(s)</summary>
+          <ul><li v-for="(issue, index) in resultErrors(current)" :key="index">{{ issue.file || 'Analysis service' }}: {{ issue.error }}</li></ul>
+        </details>
+        <p v-if="current.status === 'failed' || current.status === 'cancelled'" class="muted">
+          Analysis may be incomplete. Successful cached stages are retained. Correct the reported issue, ensure Unsloth is loaded if descriptions failed, then retry Analyze.
+        </p>
+      </template>
+      <p v-if="current.kind === 'plan' && (current.status === 'failed' || current.status === 'cancelled')" class="muted">Check the reported issue and the loaded Unsloth model, then retry Generate plan.</p>
     </div>
 
     <p v-if="actionError" class="error">{{ actionError }}</p>
 
     <h2>Generate reel</h2>
+    <p class="muted">Chronological by default. To change sequencing, explicitly request “narrative order”, “reverse chronological order”, or flashbacks in your brief.</p>
     <div class="card form plan-form">
       <textarea
         v-model="promptText"
@@ -422,36 +395,17 @@ const fileList = computed(() => filesQuery.data.value ?? [])
         <input v-model.number="targetDuration" type="number" min="10" max="600" />
       </label>
       <button
-        :disabled="generating || !promptText.trim()"
+        :disabled="generating || projectBusy || !promptText.trim()"
         @click="generatePlan"
       >
         {{ generating ? 'Sending…' : 'Generate plan' }}
       </button>
       <p
-        v-if="!tagsQuery.isLoading.value && tagList.length === 0"
+        v-if="!filesQuery.isLoading.value && fileList.every(file => !file.scene_count)"
         class="muted"
       >
         No indexed scenes yet — run Analyze first for best results.
       </p>
-      <div
-        v-if="waitingForPlanner || activePlanJob"
-        class="inline-progress"
-      >
-        <div class="progress-head">
-          <span>{{
-            waitingForPlanner && !activePlanJob
-              ? 'Contacting planner…'
-              : `Planning ${activePlanJob?.status}`
-          }}</span>
-          <span v-if="planningPercent !== null">{{ planningPercent }}%</span>
-        </div>
-        <div class="bar">
-          <div class="bar-fill" :style="{ width: (planningPercent ?? 8) + '%' }" />
-        </div>
-        <p v-if="activePlanJob?.error" class="error" :title="activePlanJob.error">
-          {{ activePlanJob.error.slice(0, 250) }}
-        </p>
-      </div>
     </div>
 
     <h2>Reels</h2>
@@ -475,11 +429,11 @@ const fileList = computed(() => filesQuery.data.value ?? [])
           </button>
           <div class="reel-render">
             <button
-              :disabled="reel.status === 'rendering' || (renderInProgress && renderingReelId === reel.id)"
+              :disabled="projectBusy || reviewingReelId !== null || submittingRender || reel.status === 'rendering' || (renderInProgress && renderingReelId === reel.id)"
               :title="reel.error ?? ''"
               @click="renderPlan(reel.id)"
             >
-              {{ renderLabel(reel) }}
+              {{ reviewingReelId === reel.id ? 'Loading review…' : renderLabel(reel) }}
             </button>
             <div
               v-if="renderInProgress && renderingReelId === reel.id && activeRenderJob"
@@ -501,6 +455,9 @@ const fileList = computed(() => filesQuery.data.value ?? [])
             @click="onDownloadReel"
           >⬇</a>
           <span v-else class="muted reel-nodl" title="Render first to download">—</span>
+        </div>
+        <div v-if="pendingRender?.id === reel.id" class="reel-detail">
+          <RenderReviewCard :review="pendingRender.review" :disabled="projectBusy || submittingRender" @render="confirmRender" @dismiss="pendingRender = null" />
         </div>
         <p
           v-if="reel.status === 'rendering' && !(renderInProgress && renderingReelId === reel.id)"

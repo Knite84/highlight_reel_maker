@@ -77,20 +77,18 @@ async def create_project(
 ):
     # A collection cannot be registered inside storage while that storage is being purged.
     async with runner.project_mutation_lock:
+        await runner.check_admission(None)
         row, media_root, db_path = await _create_project_storage(body, registry, settings)
 
-    async def on_done(result: dict) -> None:
-        await repos.update_project_counts(
-            registry, int(row["id"]), result["videos"], result["photos"]
-        )
+        async def on_done(result: dict) -> None:
+            await repos.update_project_counts(
+                registry, int(row["id"]), result["videos"], result["photos"]
+            )
 
-    job_id = await runner.enqueue(
-        project_id=int(row["id"]),
-        kind="scan",
-        handler=scan_job_handler,
-        payload={"media_path": str(media_root.resolve()), "db_path": str(db_path)},
-        on_done=on_done,
-    )
+        job_id = await runner.enqueue_locked(
+            int(row["id"]), "scan", scan_job_handler,
+            {"media_path": str(media_root.resolve()), "db_path": str(db_path)}, on_done,
+        )
     project = dict(row)
     project["scan_job_id"] = job_id
     return project
@@ -292,8 +290,17 @@ async def start_analysis(
         "media_path": str(media_root),
         "db_path": str(coredb.project_db_path(settings.projects_root, row["slug"])),
     }
+    async def on_inventory(result: dict) -> None:
+        await repos.update_project_counts(
+            registry, project_id, result["videos"], result["photos"]
+        )
+
+    async def handler(ctx, payload):
+        # Publish a committed inventory even if a later model stage fails.
+        return await analyze_job_handler(ctx, payload, on_inventory=on_inventory)
+
     job_id = await runner.enqueue(
-        project_id=project_id, kind="analyze", handler=analyze_job_handler,
+        project_id=project_id, kind="analyze", handler=handler,
         payload={**payload, "deep_verify": deep_verify},
     )
     return {"job_id": job_id}

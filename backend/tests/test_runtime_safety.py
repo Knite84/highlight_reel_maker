@@ -177,7 +177,15 @@ def test_recovery_reconciles_orphan_jobs_and_preserves_last_export(tmp_path):
                 (path,),
             )
         await conn.commit()
+        exports = settings.projects_root / "trip" / "exports"
+        exports.mkdir()
+        owned_photo = exports / f".{('a' * 32)}.photo-0.png"
+        owned_photo.write_bytes(b"interrupted normalized photo")
+        keep_photo = exports / "family.photo-0.png"
+        keep_photo.write_bytes(b"keep")
         await recover_interrupted(registry, settings)
+        assert not owned_photo.exists()
+        assert keep_photo.read_bytes() == b"keep"
         assert all(row["status"] == "failed" for row in await repos.list_jobs(registry))
         rows = await (await conn.execute("SELECT status,error FROM edits ORDER BY id")).fetchall()
         assert [r["status"] for r in rows] == ["rendered", "failed"]

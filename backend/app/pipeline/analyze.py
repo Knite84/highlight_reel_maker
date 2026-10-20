@@ -1,4 +1,3 @@
-import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -7,10 +6,12 @@ from ..ai.embeddings import MODEL_ID, Embedder, score_tags, vector_to_blob
 from ..ai.providers import LLMProvider, ProviderError, get_provider
 from ..core.config import get_settings
 from ..core.db import connect, migrate_project
+from ..core.tasks import run_blocking
 from ..jobs.worker import JobFailedWithResult
 from .describe import describe_pending_scenes
 from .frames_cv import process_photo_async, process_video_async
 from .metadata import checksum_file, extract_metadata
+from .orientation import ensure_orientation
 from .provenance import (
     archive_knowledge,
     check_source,
@@ -61,7 +62,7 @@ async def _store_scene_visuals(conn: Any, scene_id: int, entry: dict) -> None:
     )
 
 
-async def analyze_job_handler(ctx: Any, payload: dict) -> dict:
+async def analyze_job_handler(ctx: Any, payload: dict, *, on_inventory=None) -> dict:
     media_root = Path(payload["media_path"])
     cache_dir = Path(payload["db_path"]).parent
     conn = await connect(Path(payload["db_path"]))
@@ -76,7 +77,7 @@ async def analyze_job_handler(ctx: Any, payload: dict) -> dict:
     try:
         await migrate_project(conn)
         await ctx.progress(done=0, total=0, message="Scanning folder", force=True)
-        await scan_project(ctx, payload, conn)
+        summary["inventory"] = await scan_project(ctx, payload, conn, on_inventory=on_inventory)
         cur = await conn.execute("SELECT * FROM files ORDER BY rel_path")
         files = await cur.fetchall()
         total = len(files)
@@ -175,6 +176,7 @@ async def analyze_job_handler(ctx: Any, payload: dict) -> dict:
                     await conn.commit()
                     summary["metadata"] += 1
 
+                await ensure_orientation(conn, file_id, abs_path, kind, revision, stamp)
                 cur = await conn.execute(
                     "SELECT duration_sec, fps, rotation FROM files WHERE id=?", (file_id,)
                 )
@@ -307,6 +309,7 @@ async def analyze_job_handler(ctx: Any, payload: dict) -> dict:
             await ctx.progress(
                 done=index + 1, message=f"[{index + 1}/{total}] {rel_path}", force=True
             )
+        summary["coverage"] = await analysis_coverage(conn)
         if summary["errors"]:
             details = "; ".join(entry["error"] for entry in summary["errors"][:3])
             raise JobFailedWithResult(
@@ -317,6 +320,27 @@ async def analyze_job_handler(ctx: Any, payload: dict) -> dict:
         return summary
     finally:
         await conn.close()
+
+
+async def analysis_coverage(conn: Any) -> dict:
+    """Stored row coverage for current source revisions, including reused knowledge."""
+    files = await (await conn.execute(
+        "SELECT COUNT(*) AS total, COALESCE(SUM(analysis_revision=source_revision "
+        "AND xxhash IS NOT NULL),0) AS current, "
+        "COALESCE(SUM(error IS NOT NULL),0) AS failed FROM files"
+    )).fetchone()
+    scenes = await (await conn.execute(
+        "SELECT COUNT(*) AS total, COUNT(e.scene_id) AS embedded, "
+        "COUNT(d.scene_id) AS described FROM scenes s JOIN files f ON f.id=s.file_id "
+        "LEFT JOIN embeddings e ON e.scene_id=s.id "
+        "LEFT JOIN scene_descriptions d ON d.scene_id=s.id "
+        "WHERE f.analysis_revision=f.source_revision AND f.xxhash IS NOT NULL"
+    )).fetchone()
+    return {
+        "files_total": files["total"], "files_current": files["current"],
+        "files_failed": files["failed"], "scenes_current": scenes["total"],
+        "scenes_embedded": scenes["embedded"], "scenes_described": scenes["described"],
+    }
 
 
 async def _describe_file_scenes(conn: Any, cache_dir: Path, file_id: int, holder: dict) -> int:
@@ -354,12 +378,12 @@ async def _embed_file_scenes(conn: Any, cache_dir: Path, file_id: int) -> tuple[
         return 0, False
 
     try:
-        embedder = await asyncio.to_thread(Embedder.get)
+        embedder = await run_blocking(Embedder.get)
     except ImportError:
         return 0, True
 
     paths = [str(cache_dir / row["path"]) for row in pending]
-    vectors = await asyncio.to_thread(embedder.encode_images, paths)
+    vectors = await run_blocking(embedder.encode_images, paths)
     if len(vectors) != len(pending):
         raise RuntimeError("Embedding provider returned an incomplete batch")
     for row, vector in zip(pending, vectors):
@@ -369,7 +393,7 @@ async def _embed_file_scenes(conn: Any, cache_dir: Path, file_id: int) -> tuple[
             "INSERT OR REPLACE INTO embeddings(scene_id, vector, model_id) VALUES (?, ?, ?)",
             (scene_id, vector_to_blob(vector), MODEL_ID),
         )
-        for tag, tag_score in await asyncio.to_thread(score_tags, vector):
+        for tag, tag_score in await run_blocking(score_tags, vector):
             await conn.execute(
                 "INSERT OR REPLACE INTO scene_tags(scene_id, tag, score) VALUES (?, ?, ?)",
                 (scene_id, tag, tag_score),

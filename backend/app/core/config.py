@@ -3,7 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _DEFAULT_ROOT = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "ReelMaker"
@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     media_mounts: dict[str, str] = {}
     container_mode: bool = False
     exports_root: Path | None = None
+    job_queue_limit: int = Field(default=32, ge=1, le=256)
 
     @field_validator("unsloth_base_url")
     @classmethod

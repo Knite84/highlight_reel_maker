@@ -11,6 +11,6 @@ import { RouterLink, RouterView } from 'vue-router'
         <RouterLink to="/settings">Settings</RouterLink>
       </nav>
     </header>
-    <main><RouterView /></main>
+    <main><RouterView :key="$route.fullPath" /></main>
   </div>
 </template>

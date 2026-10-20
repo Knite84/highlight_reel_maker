@@ -5,7 +5,8 @@ from uuid import uuid4
 import cv2
 import numpy as np
 
-from .images import ensure_image_support
+from ..core.tasks import run_blocking
+from .images import load_display_rgb
 
 MAX_SIDE = 512
 THUMB_SIDE = 384
@@ -40,6 +41,8 @@ def _dominant_colors(img: np.ndarray, k: int = 3) -> list[str]:
 
 
 def _apply_rotation(frame: np.ndarray, rotation: int) -> np.ndarray:
+    if rotation not in (0, 90, 180, 270):
+        raise ValueError(f"Unsupported video display rotation: {rotation} degrees")
     if rotation == 90:
         return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
     if rotation == 180:
@@ -116,6 +119,12 @@ def process_video(
     file_id: int,
 ) -> list[dict]:
     cap = cv2.VideoCapture(str(path))
+    # OpenCV must return coded pixels; the explicit clockwise rotation below owns
+    # display orientation. Its default auto-rotation otherwise applies it twice.
+    cap.set(cv2.CAP_PROP_ORIENTATION_AUTO, 0)
+    if cap.get(cv2.CAP_PROP_ORIENTATION_AUTO):
+        cap.release()
+        raise RuntimeError("Video decoder cannot disable automatic orientation")
     generation = uuid4().hex
     results: list[dict] = []
     try:
@@ -187,15 +196,7 @@ def process_video(
 
 
 def _load_image_bgr(path: Path) -> tuple["np.ndarray", bool]:
-    ensure_image_support(path)
-    img = cv2.imread(str(path), cv2.IMREAD_COLOR)
-    if img is not None:
-        return img, False
-    from PIL import Image, ImageOps
-
-    with Image.open(path) as pil_img:
-        transposed = ImageOps.exif_transpose(pil_img)
-        rgb = transposed.convert("RGB")
+    rgb = load_display_rgb(path)
     bgr = cv2.cvtColor(np.asarray(rgb), cv2.COLOR_RGB2BGR)
     if bgr is None or bgr.size == 0:
         raise ValueError(f"failed to decode image: {path.name}")
@@ -203,9 +204,8 @@ def _load_image_bgr(path: Path) -> tuple["np.ndarray", bool]:
 
 
 def process_photo(path: Path, rotation: int, cache_dir: Path, file_id: int) -> dict:
-    img, already_transposed = _load_image_bgr(path)
-    if not already_transposed:
-        img = _apply_rotation(img, rotation)
+    # Keep the legacy argument for API compatibility; decode owns photo orientation.
+    img, _display_oriented = _load_image_bgr(path)
     resized = _resize_max(img, MAX_SIDE)
     generation = uuid4().hex
     rel = f"frames/{file_id}/{generation}/s0_primary.jpg"
@@ -232,12 +232,10 @@ def process_photo(path: Path, rotation: int, cache_dir: Path, file_id: int) -> d
 async def process_video_async(
     path: Path, rotation: int, scenes: list[tuple[float, float]], cache_dir: Path, file_id: int
 ) -> list[dict]:
-    import asyncio
 
-    return await asyncio.to_thread(process_video, path, rotation, scenes, cache_dir, file_id)
+    return await run_blocking(process_video, path, rotation, scenes, cache_dir, file_id)
 
 
 async def process_photo_async(path: Path, rotation: int, cache_dir: Path, file_id: int) -> dict:
-    import asyncio
 
-    return await asyncio.to_thread(process_photo, path, rotation, cache_dir, file_id)
+    return await run_blocking(process_photo, path, rotation, cache_dir, file_id)

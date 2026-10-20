@@ -2,7 +2,8 @@
 
 Implemented 2026-10-20 for the source/cache portion of audit package 2 (F01/A05).
 HEIC initialization and frame timestamp ordering were subsequently implemented as
-the scoped A03/A04 slice below. Broader orientation normalization remains F07 work.
+the scoped A03/A04 slice below. F07 orientation and F06 scene identity were then
+implemented; see [media-contracts.md](media-contracts.md) for the current contracts.
 
 HEIF registration is shared by metadata and decoding. New frame samples retain
 timestamps and decoder/estimate provenance; thumbnail selection remains quality-based
@@ -36,7 +37,9 @@ legacy files without a hash remain unverified. Referencing plans are marked stal
 after detected source changes/removal. Analyze then Generate a new plan to render
 the changed footage. Prior exports remain downloadable. Byte-identical timestamp
 changes can clear only the corresponding suspicion, not an earlier content change.
-Stable scene references and broader edit-plan versioning remain package 5 work.
+New plans use v2 scene/file/revision/hash references with validation at render admission
+and publication. V1 remains readable without automatic rewriting; ambiguous references
+require a new plan. Broader timing policy and disclosures remain package 5 work.
 
 ## Stage contracts and selective repair
 
@@ -45,7 +48,9 @@ completion time and `success`/`legacy` provenance. Artifact paths remain in the
 scene/frame tables. `pipeline/provenance.py` owns contract versions and the dependency
 rules. Bump a contract when its algorithm, prompt, sampling, tag vocabulary or
 parameters change; changing code alone does not automatically fingerprint it.
-Changing weights under the same model ID is not detected: pinned model revisions
+The additive orientation stage selectively refreshes affected visual/model descendants
+while preserving scene IDs and archiving old SQL knowledge/files. Orientation verification
+does not certify legacy model provenance. Changing weights under the same model ID is not detected: pinned model revisions
 and checksums remain part of F17.
 
 - Source or metadata/scene contract changes rebuild their dependent work.

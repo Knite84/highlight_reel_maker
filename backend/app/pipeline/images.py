@@ -21,8 +21,28 @@ def ensure_image_support(path: Path) -> None:
 
 
 def image_size_sync(path: Path) -> tuple[int, int]:
-    from PIL import Image
+    return display_image_metadata_sync(path)["size"]
+
+
+def load_display_rgb(path: Path):
+    """Return detached RGB pixels in display orientation, with no EXIF transform left."""
+    from PIL import Image, ImageOps
 
     ensure_image_support(path)
     with Image.open(path) as image:
-        return image.size
+        return ImageOps.exif_transpose(image).convert("RGB")
+
+
+def display_image_metadata_sync(path: Path) -> dict:
+    from PIL import Image, ImageOps
+
+    ensure_image_support(path)
+    with Image.open(path) as image:
+        orientation = int(image.getexif().get(274, 1))
+        return {"size": ImageOps.exif_transpose(image).size, "orientation": orientation}
+
+
+def prepare_display_photo(source: Path, output: Path) -> None:
+    # PNG inputs carry already oriented pixels, shared with analysis/focus detection.
+    image = load_display_rgb(source)
+    image.save(output, format="PNG")

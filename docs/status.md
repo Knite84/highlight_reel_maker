@@ -1,5 +1,145 @@
 # Project Status — Handoff Notes
 
+## 2026-10-20 — A07/F15/F19 job safeguards, then F09 ordering and timing review
+
+Implemented the two requested follow-ups. [job-and-planning-policy.md](job-and-planning-policy.md)
+documents admission, cancellation, failure recovery, brief directives and API compatibility.
+
+- Admission is serialized through persisted insertion and queue publication, across
+  scan/analyze/plan/render per project. Conflicting HTTP requests return 409; other
+  projects can queue work. Queue capacity defaults to 32 waiting plus one running,
+  configurable 1–256 with `REELMAKER_JOB_QUEUE_LIMIT`. Full/unavailable admission
+  returns 503; initial project creation checks capacity before allocating storage.
+- Terminal status persistence failures pause admission/execution and retry fields
+  every 0.5s, without rerunning a handler that may already have published an artifact.
+  Uncertain admission writes fail closed until restart. Unexpected worker exit is
+  logged and reflected by `/api/health` (503), not a healthy but inert application.
+  Registry cleanup runs even if provider shutdown fails.
+- Thread-backed analysis/model/file and photo-render work stays owned until the
+  current blocking call returns when cancelled. Repeated requests do not bypass the
+  barrier. Threads cannot be force-killed safely; hard model termination/process
+  isolation is not implemented. External Unsloth computation is independently managed.
+- New plans derive sequencing from explicit affirmative brief directives. Default
+  chronology and explicit reverse chronology sort all selections, including filler,
+  with source time within files. Explicit narrative sequencing preserves model order;
+  filler is appended and disclosed. Conservative English recognition/examples are
+  documented; unsupported wording defaults to chronology, not model guesswork.
+- `planner/timing.py` now owns FPS, cut runs, transition overlap and final duration
+  for both fitting and FFmpeg. The request stays authoritative, with validation to
+  one frame. Sparse collections can use long still holds or frozen end frames.
+  Seed zero is preserved; provider sampling determinism remains separate F21 work.
+- Render opens a review displaying requested/expected duration, ordering/directive,
+  holds above 4s, freezes, filler and recorded selection/expansion repairs. API tokens
+  bind plan/profile/disclosure and are checked again on job execution. Plans with
+  tradeoffs reject unreviewed/stale tokens. Existing v1/v2 JSON, knowledge and exports
+  are not rewritten; older plans show saved order and their actual timing.
+
+Verification: **202 fast backend tests passed on Windows and Linux**, one slow model
+test deselected each; Ruff passed both. **16 frontend tests passed on Windows and
+Linux/Node 22**; frontend type/build and both Docker images built. Added tests cover
+20-way runner admission and simultaneous scan/analyze/plan/render HTTP requests,
+queue capacity, four terminal/start persistence fault paths, uncertain admission,
+thread cancellation/repeated cancel, provider cleanup failure, brief/model authority,
+filler ordering, sparse maximum-duration stills, read-only legacy review and API/job
+review rechecks. Two synthetic FFmpeg exports with fractional spans, mixed cuts/fades
+and freeze tails matched the shared duration within two frames. These were measured,
+not new real-media visual/audio acceptance. No interactive browser or live Unsloth QA.
+Known Starlette/httpx and npm environment warnings remain. Dependency advisories
+recorded in the previous checkpoint have not been remediated in this slice.
+
+Both images are built; running services were not recreated, and no real project was
+reanalyzed or rendered. Activate via `scripts/start-dev.ps1` when convenient. Changes
+remain uncommitted. Remaining audit areas include F08/F18 relevance/knowledge browsing,
+F12/F13 previews/final export UX, F14/F17 model/offline readiness and HDR QA, plus
+F20/F21 maintenance/supported-feature contracts. Hard cancellation, unrestricted brief
+interpretation and interactive acceptance are limits, not completed capabilities.
+
+## 2026-10-20 — F10/F11 durable job state and honest analysis reporting
+
+- One Pinia job collection merges HTTP and SSE by monotonic server revision. Project
+  entry and SSE open/reconnect hydrate durable rows; polling runs 3 seconds after
+  each completed refresh, with 10-second status request timeouts. Streams/timers are
+  released on leaving the project. Route changes remount the view so IDs cannot leak.
+- `/jobs?project_id=…` includes recent history (up to 200 requested) plus every active
+  job in that project. Previously known active jobs falling outside the completed
+  history window get detail refreshes. Late snapshots/events cannot replace newer rows.
+  Registry migration adds `revision=0` without rewriting results/history; each patch
+  and restart reconciliation increments it. Project knowledge schema is unchanged.
+- One per-view terminal observer refreshes projects/files/tags/search/plans/details
+  for done, failed and cancelled jobs. Snapshot completions are batched. Failures no
+  longer disappear behind active-only planner UI; analysis, planning and rendering
+  have separate cards. Active cards offer Cancel; conflicting UI actions are disabled.
+  Cancellation remains a request until the backend reports a terminal state.
+- Analyze reports committed inventory, current-source stored scene/embedding/
+  description coverage, per-run stage work and expandable errors. Coverage includes
+  reused rows; it does not certify legacy provenance or model weight versions.
+  A shared scan callback publishes registry counts before later model failures.
+  Successful cached stages are reused on retry; historical job summaries are unchanged.
+
+Verification: **169 fast backend tests passed on Windows and Linux**, one slow test
+deselected each. Ruff passed Windows/Linux. **15 frontend
+tests passed on Windows and Linux/Node 22**, frontend type/build and both images built.
+Frontend tests use actual Pinia transport/timer behavior plus server-rendered Vue
+templates, with fake HTTP/SSE and no model calls. Backend regressions cover old registry
+migration, revisions, active jobs outside 200-row history, API project filtering,
+inventory counts after later failure, cached coverage and four injected analysis
+failures (missing ML, offline provider, invalid response, damaged photo).
+No new real-media visual/audio, interactive browser or live Unsloth QA occurred.
+Known Starlette/httpx and npm environment warnings remain; the image's `npm ci`
+also reports four high-severity advisories, whose applicability/fixes remain the
+dependency-maintenance audit item (no blind lockfile upgrade in this slice).
+
+Running services were not recreated, and real project data was not reanalyzed.
+Activate both images via `scripts/start-dev.ps1` when convenient; no commit/push
+was made. Remaining package 3 work includes atomic admission across operations,
+bounded queue/persistence-failure worker supervision, deeper model cancellation
+and interactive browser acceptance. Remaining product work includes F09 policy/
+disclosures, relevance/browsing, previews/final exports and model/HDR readiness.
+
+## 2026-10-20 — F07 orientation and F06 scene identity
+
+Implemented both requested findings. [media-contracts.md](media-contracts.md) describes
+the decoder boundary, selective cache upgrade, v2 fields and v1 compatibility.
+
+- Photo metadata, thumbnails, face detection and rendering share display-oriented
+  RGB pixels. JPEG EXIF 1–8 is applied once; HEIF container transforms are respected.
+  Rendering uses unique normalized PNG inputs; interrupted owned inputs are cleaned
+  on restart. Relative export-directory inputs now resolve before process execution.
+- Video analysis disables OpenCV auto-rotation and applies one clockwise transform;
+  display-matrix angle conversion is corrected. FFmpeg renders original display
+  metadata. Quarter-turn fixtures agree across analysis and final output; unsupported
+  arbitrary analysis angles fail explicitly. Mirrored video matrices, VFR precision
+  and existing HDR color limitations remain outside the verified scope.
+- Analyze establishes `orientation=display.v1`. Affected rotated/mirrored photos,
+  HEIC/HEIF and rotated videos refresh visual/model descendants. Scene IDs/boundaries
+  and prior artifact files remain intact; SQL knowledge is archived even when its
+  thumbnail pointer was missing. Unaffected caches are reused. Orientation verification
+  alone no longer hides the legacy-provenance warning for expensive analysis.
+- New plans store schema v2 with scene/file IDs, source revision and content hash.
+  Prompt IDs, interval fallback, clipping/growth and fillers resolve exact scenes.
+  Within-file ordering includes source time and runs after filler insertion. Model
+  guesses cannot override backend source identity; unverified hashes require Analyze.
+- Render admission/job/publication validate identities and bounds. Byte-identical
+  verified inventory changes remain compatible; missing/stale/ambiguous references
+  fail with replan guidance. V1 JSON remains readable without automatic rewriting;
+  legacy explicit ranges do not gain v2 guarantees. Previous downloads remain available.
+
+Verification: **160 fast tests passed on Windows and Linux**, one slow test deselected
+each; Ruff passed both; frontend type/build passed; backend image built. Coverage
+includes 21 orientation fixtures and 17 scene identity scenarios plus cache/API/recovery
+regressions. Viewed the rendered EXIF 1–8 contact sheet. One EXIF-1 photo from the real
+collection rendered into an isolated QA database using NVENC and cached face weights;
+display pixels and output crop were viewed, measured 4.0 seconds, original hash unchanged.
+Artifacts/report are under ignored `.docker-smoke/f07-real-85283968a3ec4c0c998548ecfa1f5661/`.
+No real collection database was migrated/reanalyzed. No audio listening, interactive
+browser or live Unsloth QA occurred. Known Starlette/httpx, npm environment and a
+nonfatal OpenCV graph-target warning remain.
+
+Running services were not recreated. Activate with `scripts/start-dev.ps1`; load
+Unsloth before Analyze if orientation correction requires new descriptions. Changes
+remain uncommitted. The next backlog includes remaining F09 policy/disclosures,
+retrieval relevance, frontend job state, preview/final exports and capability hardening.
+
 ## 2026-10-20 — Request duration authority (F05) and documentation handoff
 
 New planning requests now apply the validated request's duration before model-plan

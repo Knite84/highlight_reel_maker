@@ -34,7 +34,7 @@ async def recover_interrupted(registry, settings: Settings) -> None:
         )
         if exports.is_dir():
             for artifact in exports.iterdir():
-                if re.fullmatch(r"\.[0-9a-f]{32}\.(partial\.mp4|title\.txt)", artifact.name):
+                if re.fullmatch(r"\.[0-9a-f]{32}\.(partial\.mp4|title\.txt|photo-\d+\.png)", artifact.name):
                     try:
                         artifact.unlink()
                     except OSError:
@@ -42,7 +42,7 @@ async def recover_interrupted(registry, settings: Settings) -> None:
                             "Interrupted render temporary file could not be removed: %s", artifact
                         )
     await registry.execute(
-        "UPDATE jobs SET status='failed',error=?,finished_at=? "
+        "UPDATE jobs SET status='failed',error=?,finished_at=?,revision=revision+1 "
         "WHERE status IN ('queued','running')",
         (INTERRUPTED, repos.utc_now()),
     )

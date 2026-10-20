@@ -190,7 +190,11 @@ def test_legacy_migration_preserves_rows_without_inference(library):
     run()
     assert calls == before
     assert query("SELECT * FROM scene_descriptions ORDER BY scene_id") == descriptions
-    assert {r["status"] for r in query("SELECT * FROM analysis_stages")} == {"legacy"}
+    assert {r["status"] for r in query("SELECT * FROM analysis_stages WHERE stage != 'orientation'")} == {"legacy"}
+    assert query("SELECT status FROM analysis_stages WHERE stage='orientation'")[0]["status"] == "success"
+    from app.api.files import FILE_COLUMNS
+
+    assert {row["provenance_status"] for row in query(f"SELECT {FILE_COLUMNS} FROM files")} == {"legacy"}
 
 
 def test_failed_frame_write_is_retryable_and_not_published(library, monkeypatch):
@@ -233,6 +237,52 @@ def test_retry_provider_failure_preserves_successful_stages(library):
     assert result["metadata"] == result["visuals"] == result["embedded"] == 0
     assert calls["metadata"] == before["metadata"]
     assert result["described"] == 2
+
+
+def test_coverage_distinguishes_cached_knowledge_from_work_this_run(library):
+    _media, _db, _calls, _provider, run, _query = library
+    first = run()
+    reused = run()
+    assert reused["embedded"] == reused["described"] == 0
+    assert first["coverage"] == reused["coverage"] == {
+        "files_total": 2, "files_current": 2, "files_failed": 0,
+        "scenes_current": 2, "scenes_embedded": 2, "scenes_described": 2,
+    }
+    assert reused["inventory"] == {"videos": 0, "photos": 2, "removed": 0}
+
+
+@pytest.mark.parametrize("failure", ["ml_missing", "provider_offline", "invalid_response", "damaged_file"])
+def test_incomplete_analysis_retains_coverage_errors_and_retry_guidance(library, monkeypatch, failure):
+    from app.ai.providers import PlannerOutputError
+
+    media, _db, _calls, provider, run, _query = library
+    if failure == "ml_missing":
+        def missing():
+            raise ImportError("missing ML dependencies")
+        monkeypatch.setattr(analyze.Embedder, "get", missing)
+    elif failure == "provider_offline":
+        provider.fail = True
+    elif failure == "invalid_response":
+        async def invalid(**kwargs):
+            raise PlannerOutputError("invalid response", raw="not JSON")
+        monkeypatch.setattr(provider, "chat_json", invalid)
+    else:
+        (media / "b.jpg").write_bytes(b"damaged photo")
+    with pytest.raises(JobFailedWithResult) as raised:
+        run()
+    result = raised.value.result
+    assert result["errors"]
+    assert result["inventory"]["photos"] == result["coverage"]["files_total"] == 2
+    assert "retry Analyze" in str(raised.value)
+    if failure == "ml_missing":
+        assert result["coverage"]["scenes_embedded"] == 0
+        assert result["coverage"]["scenes_described"] == 2
+    elif failure in ("provider_offline", "invalid_response"):
+        assert result["coverage"]["scenes_embedded"] == 2
+        assert result["coverage"]["scenes_described"] == 0
+    else:
+        assert result["coverage"]["files_failed"] == 1
+        assert any(error["file"] == "b.jpg" for error in result["errors"])
 
 
 def test_changed_sources_are_excluded_until_refreshed(library):
@@ -368,3 +418,28 @@ def test_model_change_preserves_other_stages(library, monkeypatch, model):
     else:
         assert result["described"] == 2
         assert calls["embedded"] == before["embedded"]
+
+
+def test_orientation_upgrade_rebuilds_only_affected_visual_descendants(library):
+    media, db, calls, _provider, run, query = library
+    image = Image.new("RGB", (80, 40), "blue")
+    exif = image.getexif()
+    exif[274] = 6
+    image.save(media / "a.jpg", exif=exif)
+    run()
+    before = calls.copy()
+    scenes = query("SELECT id,file_id FROM scenes ORDER BY id")
+    old_frames = query("SELECT path FROM scene_frames")
+    # Simulate a retained cache made before the explicit orientation contract.
+    query("DELETE FROM analysis_stages WHERE stage='orientation' AND file_id=1")
+    query("UPDATE scenes SET rep_frame_path=NULL WHERE file_id=1")
+    query("UPDATE files SET rotation=90 WHERE id=1")
+    result = run()
+    assert result["metadata"] == result["scenes"] == 0
+    assert result["visuals"] == result["embedded"] == result["described"] == 1
+    assert calls["metadata"] == before["metadata"]
+    assert query("SELECT id,file_id FROM scenes ORDER BY id") == scenes
+    assert all((db.parent / frame["path"]).is_file() for frame in old_frames)
+    assert query("SELECT reason FROM knowledge_history")[-1]["reason"] == "Display orientation contract upgraded"
+    row = query("SELECT width,height,rotation FROM files WHERE id=1")[0]
+    assert row == {"width": 40, "height": 80, "rotation": 0}

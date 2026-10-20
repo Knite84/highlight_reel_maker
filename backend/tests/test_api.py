@@ -113,7 +113,9 @@ def test_download_marks_reel_downloaded(client, media_dir):
     async def mark_stale():
         conn = await connect(db_path)
         try:
-            await conn.execute("UPDATE edits SET stale_sources=? WHERE id=1", ('{"a.mp4":"old-hash"}',))
+            await conn.execute(
+                "UPDATE edits SET stale_sources=? WHERE id=1", ('{"a.mp4":"old-hash"}',)
+            )
             await conn.commit()
         finally:
             await conn.close()
@@ -124,18 +126,54 @@ def test_download_marks_reel_downloaded(client, media_dir):
     assert "Generate a new plan" in rejected.json()["detail"]
     assert client.get(f"/api/projects/{project_id}/plans/1/download").content == b"fake mp4"
 
+    async def stale_identity():
+        import json
+
+        plan = {
+            "schema_version": "v2",
+            "prompt": "old",
+            "target_duration_sec": 10,
+            "clips": [
+                {
+                    "rel_path": "a.mp4",
+                    "start_sec": 0,
+                    "end_sec": 4,
+                    "scene_id": 999,
+                    "source_file_id": 1,
+                    "source_revision": 0,
+                    "source_hash": "old-hash",
+                }
+            ],
+        }
+        conn = await connect(db_path)
+        try:
+            await conn.execute(
+                "UPDATE edits SET stale_sources='{}',plan_json=? WHERE id=1", (json.dumps(plan),)
+            )
+            await conn.commit()
+        finally:
+            await conn.close()
+
+    asyncio.run(stale_identity())
+    rejected = client.post(f"/api/projects/{project_id}/plans/1/render", json={"profile": "proxy"})
+    assert rejected.status_code == 409
+    assert "reference is stale or ambiguous" in rejected.json()["detail"]
+    assert client.get(f"/api/projects/{project_id}/plans/1/download").content == b"fake mp4"
+
 
 def test_deep_verification_option_reaches_analysis_job(client, media_dir, monkeypatch):
     from app.api import projects
 
     received = []
 
-    async def handler(ctx, payload):
+    async def handler(ctx, payload, **kwargs):
         received.append(payload)
         return {}
 
     monkeypatch.setattr(projects, "analyze_job_handler", handler)
-    created = client.post("/api/projects", json={"name": "Verify", "media_path": str(media_dir)}).json()
+    created = client.post(
+        "/api/projects", json={"name": "Verify", "media_path": str(media_dir)}
+    ).json()
     _wait_job(client, created["scan_job_id"])
     response = client.post(f"/api/projects/{created['id']}/analyze?deep_verify=true")
     assert response.status_code == 202

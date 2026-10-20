@@ -13,6 +13,9 @@ from ..core.config import Settings
 from ..core.paths import local_path, source_path
 from ..jobs.worker import JobRunner
 from ..planner.generate import generate_plan
+from ..planner.identity import validate_plan_identity
+from ..planner.review import render_review
+from ..planner.schemas import EditPlan
 from ..renderer.encode import VALID_PROFILES
 from ..renderer.render import render_job_handler
 from .deps import get_registry, get_runner, get_settings_dep, project_or_404
@@ -33,6 +36,7 @@ class PlanCreate(BaseModel):
 
 class RenderRequest(BaseModel):
     profile: str = "proxy"
+    review_token: str | None = None
 
 
 async def _edit_or_404(conn, edit_id: int):
@@ -58,7 +62,7 @@ async def plan_job_handler(ctx, payload: dict) -> dict:
                 f"LLM provider unreachable ({exc}); start Unsloth and retry"
             ) from exc
         await ctx.progress(done=0, total=3, message="Selecting candidate scenes", force=True)
-        seed = int(payload.get("seed") or random.randrange(2**31))
+        seed = int(payload["seed"]) if payload.get("seed") is not None else random.randrange(2**31)
         try:
             plan, refs = await generate_plan(
                 provider,
@@ -181,6 +185,15 @@ async def render_plan(
         row = await _edit_or_404(conn, edit_id)
         if json.loads(row["stale_sources"]):
             raise HTTPException(status_code=409, detail="Plan sources changed; Analyze then Generate a new plan. Previous exports remain downloadable.")
+        try:
+            await validate_plan_identity(conn, EditPlan.model_validate(json.loads(row["plan_json"])))
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        review = await render_review(conn, row["plan_json"], body.profile)
+        if review["warnings"] and body.review_token != review["token"]:
+            raise HTTPException(status_code=409, detail="Review this plan's duration tradeoffs before rendering; fetch its render-review and submit the current token.")
+        if body.review_token is not None and body.review_token != review["token"]:
+            raise HTTPException(status_code=409, detail="The render review changed; review the plan again")
     finally:
         await conn.close()
     active = await repos.get_active_job_for(registry, project_id, "render")
@@ -192,11 +205,33 @@ async def render_plan(
         "export_dir": str(export_dir),
         "edit_id": edit_id,
         "profile": body.profile,
+        "review_token": review["token"],
     }
     job_id = await runner.enqueue(
         project_id=project_id, kind="render", handler=render_job_handler, payload=payload
     )
     return {"job_id": job_id}
+
+
+@router.get("/{edit_id}/render-review")
+async def get_render_review(
+    edit_id: int, project_id: int, profile: str = "proxy",
+    registry=Depends(get_registry), settings=Depends(get_settings_dep),
+):
+    if profile not in VALID_PROFILES:
+        raise HTTPException(status_code=400, detail=f"profile must be one of {VALID_PROFILES}")
+    db_path, _m, _e = await _project_context(project_id, registry, settings)
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Plan not found")
+    conn = await coredb.connect(db_path)
+    try:
+        row = await _edit_or_404(conn, edit_id)
+        try:
+            return await render_review(conn, row["plan_json"], profile)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail="Saved plan cannot be reviewed; Generate a new plan. Previous exports remain downloadable.") from exc
+    finally:
+        await conn.close()
 
 
 @router.get("/{edit_id}/download")

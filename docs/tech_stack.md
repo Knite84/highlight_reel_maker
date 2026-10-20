@@ -13,10 +13,10 @@ Companion to [`status.md`](status.md) (current state) and [`implementation-plan.
 |---|---|---|
 | UI | Vue 3 + TypeScript + Vite + Pinia + TanStack Query | No component library — hand-rolled cards/grids. Vite `strictPort: true` on 5173 |
 | UI views | `ProjectsView`, `ProjectView`, `SettingsView` | ProjectView is the main surface: Analyze → Generate → Reels grid → collapsed Scene library / Media files accordions |
-| Realtime | SSE (`/api/jobs/stream`) → Pinia jobs store | 3s polling follows locally started jobs; plan list polls at 4s while rows are rendering. SSE has no snapshot/replay; recovery remains incomplete |
+| Realtime | SSE (`/api/jobs/stream`) + scoped HTTP snapshots → one Pinia jobs store | Hydrates on project entry and SSE open/reconnect; polls 3s after each completed refresh. Monotonic registry job revisions reject stale responses. Snapshots include recent 200 plus all active project jobs; known active jobs outside that window get detail refreshes. Plan list also polls rendering rows at 4s |
 | Backend | Python >=3.12 + FastAPI + uvicorn | Docker Linux Python 3.13.16; native checks on 3.13.6. Start via `scripts/start-dev.ps1` |
 | DB | SQLite via aiosqlite | Registry (`%LOCALAPPDATA%\ReelMaker\registry.db`) + per-project `cache/db.sqlite`. Migrations via `CREATE TABLE IF NOT EXISTS` + `_ensure_column` |
-| Jobs | asyncio queue (`app/jobs/worker.py`) | One global worker; callable handlers and queue are in memory, job rows in registry SQLite. Startup reconciles interrupted jobs/edits; shutdown cancels work. Encoder timeout, bounded output, kill/reap cleanup |
+| Jobs | Bounded asyncio queue (`app/jobs/worker.py`) | One process/worker; atomic cross-kind admission per project, default 32 waiting jobs. Handlers/queue/terminal retry buffer are in memory, rows in registry SQLite. Persistence faults pause admission/execution; health reports worker failure. Startup reconciles interruptions; shutdown cancels owned work |
 | LLM/VLM | Unsloth Desktop (OpenAI-compatible), Qwen3-VL GGUF | External Windows server; planner + scene descriptions. `/v1/models` lists *downloaded* ≠ *loaded* |
 | Embeddings | SigLIP2 via transformers (CPU torch inside backend Docker) | Zero-shot tag vocabulary; vectors in `embeddings` table |
 | Face detection | OpenCV `FaceDetectorYN` (YuNet) | Stills only, render-time crop anchoring. ONNX (~230KB) auto-downloaded from OpenCV Zoo to `%LOCALAPPDATA%\ReelMaker\models\`; graceful fallback to upper-biased heuristic |
@@ -25,7 +25,8 @@ Companion to [`status.md`](status.md) (current state) and [`implementation-plan.
 | Frame evidence | Nullable `scene_frames.timestamp_sec` / `timestamp_source` | Sharpest primary remains independent of chronological vision inputs. Decoder milliseconds or labeled index/FPS estimates; legacy unknown timestamps use one representative frame |
 | Rendering | FFmpeg/ffprobe | Filtergraph builder (`renderer/filtergraph.py`): xfade/acrossfade, Ken Burns `zoompan` from 4× upscaled stills, `tpad`/`apad`, loudnorm, BT.709 output. NVENC requires an actual encode probe, otherwise x264. Docker uses CPU zscale tone mapping (libplacebo corrupted real HDR output); native capability errors retry with zscale. NVENC still encodes. HDR appearance needs broader QA |
 | Duration policy | Planner fitter (`planner/generate.py`) | Request duration overrides model output before validation/fitting (F05). Frame-based grow/shrink, `_evenize_photo_spans`, freeze-tail fallback remain; chronology, pacing disclosures and shared timing ownership are open (F09). Output duration/streams/resolution are probed before publication |
-| EXIF/orientation | exiftool + OpenCV + PIL `exif_transpose` + ffmpeg `transpose` | Stored per-file (`files.rotation`, degrees CW). Current decode/rotation paths can double-apply EXIF (review F07); normalized decoder contract pending |
+| EXIF/orientation | Shared Pillow/HEIF display decoder, explicit OpenCV video rotation, FFmpeg display metadata | Photos normalize once, including EXIF mirrors, and render from temporary PNGs. Photo dimensions are display dimensions/rotation zero; video dimensions stay coded with separate clockwise rotation. `orientation=display.v1` upgrades only affected visual descendants |
+| Plan identity | Edit-plan JSON v2 / legacy v1 readers | Scene ID, source file ID/revision/hash bind new clips; fitters resolve scenes, render checks freshness/bounds, v1 ambiguity requires replanning. Source-time ordering runs after fillers. No new database schema required |
 | Config | pydantic-settings, `REELMAKER_*` env + `backend\.env` | `data_root`, `projects_root`, Unsloth URL/key, planner model id |
 | Dev tooling | pytest (fast suite; `-m slow` = real-model E2E), ruff, vue-tsc | Backend has **no auto-reload** — restart via scripts after Python edits |
 
@@ -85,9 +86,22 @@ Vue views / TanStack Query / Pinia
   validation and duration repairs. Candidate retrieval currently ignores prompt relevance.
 - `backend/app/renderer/`: crop focus, profile/encoder selection, graph generation,
   FFmpeg execution and edit status updates. A plan is reusable without rerunning vision.
+- `pipeline/images.py` / `pipeline/orientation.py`: display decoding and selective
+  legacy visual-cache upgrade, retaining scene IDs/history. `planner/identity.py`
+  validates v2 references and unambiguous v1 intervals before rendering/publication.
+  See [media-contracts.md](media-contracts.md) for supported transforms and limitations.
 - `frontend/src/views/ProjectView.vue`: most project actions, job state, reels, and library UI.
+- `frontend/src/stores/jobState.ts` owns revision merging and per-view terminal
+  notification; `stores/jobs.ts` owns scoped SSE/polling, timeout/reconnect and cancellation.
+  ProjectView has one batched query refresh path for done/failed/cancelled jobs and
+  shows analysis row coverage, per-run work, retained errors and retry guidance.
 - `frontend/src/components/PlanPreview.vue`: source sequence player; currently incomplete
   for images and not visually equivalent to the rendered output.
+- `core/tasks.py`: shields blocking job threads through cancellation until return,
+  retaining ownership before cleanup/next job. Subprocesses keep their separate kill/reap path.
+- `planner/ordering.py`, `timing.py`, `review.py`: conservative explicit brief
+  sequencing, shared planner/renderer timeline math, and server-derived duration
+  disclosure tokens. `RenderReview.vue` presents review before the render action.
 
 Storage uses plain SQL through aiosqlite, WAL journaling, and foreign keys. There is
 no ORM, vector database, distributed job broker, or versioned migration framework.
@@ -95,7 +109,8 @@ Search computes NumPy similarity over up to 4,000 loaded embedding rows. Source
 revisions and explicit stage/model contracts govern cache reuse. Missing visual
 artifacts repair selectively; unchanged complete caches avoid inference/provider calls.
 Contracts require explicit version bumps; weight changes under the same model ID
-still require pinned revisions/checksums. Orientation and HEIC fixes remain open.
+still require pinned revisions/checksums. Orientation/HEIF now use the documented
+display contract; see media-contract limits for HDR, mirrored video and VFR coverage.
 
 ## Runtime data layout (`%LOCALAPPDATA%\ReelMaker\`)
 
@@ -139,8 +154,39 @@ not move files. Restore may supply a new display name when the old one is in use
 - Profiles: proxy 1280x720 at 8M, final 1920x1080 at 20M, 30 fps, H.264 video/AAC audio.
   Frontend currently requests proxy only. Music schema exists, but music mixing is
   not implemented. Face detection only informs still-photo framing, not recognition.
+- `REELMAKER_JOB_QUEUE_LIMIT` defaults to 32 waiting jobs (1–256), plus one active.
+  Admission conflicts return 409; full/unavailable worker returns 503. Terminal writes
+  retry at 0.5s without handler replay; ambiguous admission writes require restart.
+  No new dependency or inference/provider deployment was introduced in this slice.
+  V2 sequencing/adjustment/filler JSON fields are additive; old plans are read-only
+  during review. See [job-and-planning-policy.md](job-and-planning-policy.md).
 
 ## Verification and maintenance
+
+Latest A07/F15/F19 + F09 slice (2026-10-20): **202 fast backend tests passed on Windows
+and Linux**, one slow test deselected each; Ruff passed both. **16 frontend tests
+passed on Windows and Linux/Node 22**, frontend type/build and both images built.
+Synthetic mixed-transition/freeze FFmpeg exports matched shared timing within two
+frames. No new real-media visual/audio, interactive browser or live Unsloth QA.
+Thread hard termination and model output determinism are not claimed.
+
+F10/F11 slice (2026-10-20): **169 fast backend tests passed on Windows and Linux**,
+one slow test deselected each. Ruff passed Windows and Linux.
+**15 frontend tests passed on Windows and Linux/Node 22**, including actual Pinia
+transport/timer tests and server-rendered Vue project templates; frontend build and
+both Docker image builds passed. The web image now runs `npm test` before build.
+Contributor tests require Node 22.18+ and existing Vite/Vue dependencies; no runtime
+dependency was added. Registry migration adds `jobs.revision` with zero default;
+existing job results/history and project knowledge remain intact. Analyze's committed
+inventory callback updates counts even if later analysis fails. Stored coverage is
+row presence for current source revisions, not certification of legacy models/artifacts.
+No new real-media, audio, browser-interaction or live Unsloth QA occurred.
+
+Latest F07/F06 slice (2026-10-20): **160 fast tests passed on Windows and Linux**,
+one slow test deselected each; Ruff passed both, frontend build passed, backend image
+built. Viewed all rendered EXIF fixtures and one real-photo NVENC render using cached
+face weights in an isolated QA store. Original source hash unchanged. No audio
+listening, browser or live Unsloth QA. Earlier checkpoint evidence follows.
 
 Latest duration-authority slice (2026-10-20): **121 fast tests passed on Windows and
 Linux**, one slow test deselected each; Ruff passed both; frontend build passed;
@@ -153,7 +199,8 @@ and Linux**, one slow test deselected each; Ruff passed both, frontend build pas
 backend image built. Fresh-process HEIC/HEIF and captured vision ordering were tested;
 a synthetic HEIC thumbnail was viewed. No new real-media/audio/browser/live-model QA.
 Description contract v2 selectively refreshes tracked v1 descriptions on Analyze;
-frame/embedding caches remain reusable. Orientation normalization remains pending.
+frame/embedding caches remain reusable. Orientation normalization was addressed by
+the later F07/F06 checkpoint above.
 
 Earlier source/cache slice (2026-10-20): **110 fast tests passed on Windows and Linux**,
 one slow test deselected each; Ruff passed both and frontend type/build passed.

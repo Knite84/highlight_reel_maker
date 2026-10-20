@@ -83,10 +83,19 @@ Download still saves a browser copy. See [storage and recovery details](docs/doc
    See [cache reuse and recovery](docs/cache-provenance.md) for legacy-data behavior.
    HEIC initializes automatically. New vision frame inputs follow recorded timestamps;
    older frames without timestamps use one representative for new descriptions.
+   Photos now use one display-orientation decoder for thumbnails, face framing and
+   rendering, including EXIF mirrors. The first Analyze refreshes affected legacy
+   visual analysis while preserving scene IDs and historical knowledge.
 3. **Generate plan** uses your prompt and requested duration; **Render** executes the plan.
    Your duration overrides the model's suggested target before fitting. This applies
-   to newly generated plans; saved plans keep their existing timing. Chronology and
-   clearer disclosure of duration-filling tradeoffs remain audit follow-ups.
+   to newly generated plans; saved plans keep their existing timing. Sequencing defaults
+   to chronology. Explicitly request “narrative order”, “reverse chronological order”,
+   or flashbacks in the brief for another sequence; storytelling mood alone keeps chronology.
+   Render opens a timing review showing long still holds, freezes, added filler and
+   selection repairs before **Render this plan** starts encoding.
+   New v2 plans bind clips to scene IDs and source hashes, so selecting a later
+   scene from the same video retains that interval. Older v1 plans remain readable;
+   ambiguous references require a new plan. See [media contracts](docs/media-contracts.md).
 4. Download the resulting MP4. The current UI requests the 720p proxy profile; final-export
    UI and preview correctness remain audit follow-ups.
 
@@ -98,6 +107,20 @@ failed render preserves the last successful MP4.
 Plans referencing changed sources require Analyze and a new plan; existing exports
 remain downloadable. Database migration creates an integrity-checked local snapshot.
 
+Project job cards recover after reload/navigation and refresh on reconnect, with
+polling as a fallback when live events are unavailable. Failed/cancelled operations
+refresh results too. Cards show errors and offer Cancel for active work; cancellation
+may wait for an in-progress model computation. Analyze reports stored scene coverage,
+work completed in this run, and expandable issues. Retry Analyze after correcting
+the issue; successful cached stages are reused. Older jobs keep their original summaries.
+One operation per project may be queued/running. Other projects can queue up to 32
+waiting jobs by default (`REELMAKER_JOB_QUEUE_LIMIT`). Busy projects return a conflict;
+a full queue or unavailable worker returns retry guidance. Job-status write failures
+pause new work and retry without rerunning handlers; Docker health reports worker
+failure. Blocking thread cancellation waits for the current computation to return.
+See [job and planning policy](docs/job-and-planning-policy.md) for API review tokens,
+failure recovery, directive wording and limits.
+
 ## Contributor checks
 
 ```powershell
@@ -105,6 +128,7 @@ cd backend
 uv run pytest
 uv run ruff check .
 cd ..\frontend
+npm test
 npm run build
 cd ..
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test-docker-scripts.ps1
@@ -112,6 +136,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\test-docker-scripts.
 
 Linux checks and the disposable Docker lifecycle test are documented in
 [docs/docker.md](docs/docker.md). Real-model integration is separate (`pytest -m slow`).
+Frontend contributor tests use Node 22.18+ (Node 22 in Docker) and existing development
+dependencies; the web image runs them before building. No new test dependency is required.
 Rebuild/recreate the backend after Python changes; the packaged app has no hot reload.
 
 Read [AGENTS.md](AGENTS.md), [lessons learned](docs/lessons_learned.md), and the

@@ -2,9 +2,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-KenBurnsDirection = Literal[
-    "zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up", "pan_down"
-]
+KenBurnsDirection = Literal["zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up", "pan_down"]
 TransitionType = Literal["cut", "crossfade", "fade_from_black", "fade_to_black"]
 
 
@@ -45,6 +43,10 @@ class KenBurns(BaseModel):
 
 
 class PlannedClip(BaseModel):
+    scene_id: int | None = Field(default=None, gt=0)
+    source_file_id: int | None = Field(default=None, gt=0)
+    source_revision: int | None = Field(default=None, ge=0)
+    source_hash: str | None = None
     rel_path: str
     start_sec: float = Field(ge=0)
     end_sec: float
@@ -53,6 +55,7 @@ class PlannedClip(BaseModel):
     ken_burns: KenBurns | None = None
     reason: str = ""
     freeze_tail_sec: float = Field(default=0.0, ge=0)
+    duration_filler: bool = False
 
     @field_validator("freeze_tail_sec", mode="before")
     @classmethod
@@ -106,7 +109,7 @@ class MusicSlot(BaseModel):
 
 
 class EditPlan(BaseModel):
-    schema_version: Literal["v1"] = "v1"
+    schema_version: Literal["v1", "v2"] = "v1"
     prompt: str
     target_duration_sec: float = Field(gt=0, le=7200)
     seed: int = 0
@@ -114,6 +117,23 @@ class EditPlan(BaseModel):
     title: TitleCard | None = None
     music: MusicSlot | None = None
     notes: str | None = None
+    sequencing: Literal["chronological", "narrative", "reverse_chronological"] | None = None
+    sequencing_evidence: str | None = None
+    timing_adjustments: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_identity(self) -> "EditPlan":
+        if self.schema_version == "v2" and any(
+            clip.scene_id is None
+            or clip.source_file_id is None
+            or clip.source_revision is None
+            or not clip.source_hash
+            for clip in self.clips
+        ):
+            raise ValueError(
+                "v2 clips require scene_id, source_file_id, source_revision and source_hash"
+            )
+        return self
 
     @model_validator(mode="before")
     @classmethod

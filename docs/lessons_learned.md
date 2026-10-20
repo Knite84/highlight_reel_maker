@@ -38,8 +38,13 @@ embeddings/descriptions.
 **Rule:** preserve useful fallbacks, but report degraded capability, affected scope,
 and a recovery action in the operation result and UI.
 
-**Protection:** inject missing model/dependency/provider failures. UI coverage is
-pending; see review F10, F14, F17.
+**Evidence/protection added 2026-10-20 (F10):** injected missing ML dependencies,
+offline provider, invalid provider response and damaged photo failures retain structured
+coverage/errors and retry guidance. Coverage includes cached rows, separately from work
+this run. Analyze publishes committed inventory counts before later model failures.
+Vue template tests verify incomplete analysis and failed planning remain visible.
+These are automated store/template checks, not browser or live-model acceptance;
+capability preparation and broader F14/F17 fallback disclosure remain open.
 
 ## LL03 · Make timing policy explicit, and preserve user authority
 
@@ -57,8 +62,18 @@ regressions run the real planning handler and persistence path: shorter, longer,
 zero, null, invalid and omitted model duration each retain the 45-second request.
 They verify the saved column/JSON agree and the fitted timeline is within one frame
 of the target. No real inference is required. Existing saved plans are unchanged.
-Filler chronology, pre-render pacing disclosures and shared timing ownership remain
-F09/package 5 work; this test does not establish visual/audio quality.
+At that checkpoint, chronology/disclosure/shared timing remained F09 work; the
+follow-up below records its implementation. Neither test slice establishes creative
+or real-media visual/audio quality.
+
+**Evidence/protection added 2026-10-20 (F09):** explicit affirmative brief directives
+now authorize narrative/reverse ordering; unspecified or negated requests stay
+chronological. Server-derived selection repairs and current clip timings feed a
+pre-render review (long stills/freezes/filler), with plan/profile tokens rechecked at
+execution. One timing module supplies planner and renderer. Tests cover filler order,
+model/request authority, sparse 1800-second stills, legacy read-only review and token
+rejection; measured synthetic exports agree within two frames. Default still threshold
+is disclosed as 4s, not a hard cap. Unknown directive phrasing falls back to chronology.
 
 ## LL04 · Detection cannot protect subjects it does not detect
 
@@ -82,15 +97,26 @@ orientation while `_load_image_bgr` reported otherwise. The earlier note that
 Apply orientation exactly once, including mirrored EXIF cases; use the same coordinate
 system for thumbnails, detection, and render framing.
 
-**Protection:** pending EXIF 1–8 and HEIC fixtures and visual render comparisons (F07).
-The current suite passing does not establish this contract.
+**Evidence/protection added 2026-10-20 (F07):** shared display-oriented RGB decoding
+now owns photo transforms, including EXIF mirrors; rendering receives normalized
+PNG pixels. OpenCV video auto-rotation is disabled before explicit rotation, and
+FFprobe counterclockwise display matrices are converted to clockwise analysis angles.
+`test_orientation.py` checks all eight JPEG EXIF values through metadata, thumbnails,
+face-detector input and actual renders, HEIF header mirror/rotation and 90/180/270
+phone-video matrices. The rendered contact sheet and one real-photo export were viewed.
+Selective upgrade tests retain scene IDs, history and old files, including missing
+thumbnail-pointer cases. Mirrored video matrices/HDR color/VFR precision are not covered.
+HEIF fixtures must encode actual container transforms: supplying a Pillow EXIF object
+to this plugin did not establish those transforms; EXIF bytes plus decoded color/dimension
+assertions do. Do not treat a fixture's filename or intended flags as evidence.
 
 **Evidence/protection added 2026-10-20 (A03):** metadata previously opened HEIC with
 Pillow before the frame decoder registered its codec. Shared initialization now
 registers HEIF before either path opens it. `test_heic_frame_order.py` creates a HEIC
 fixture in the parent but starts a clean child for scan → metadata → visuals; both
 `.heic` and uppercase `.HEIF` pass on Windows and Linux. A synthetic HEIC thumbnail
-was viewed. This fixes process initialization, not the remaining orientation contract.
+was viewed. That initial slice fixed process initialization; the F07 entry above
+records the later orientation contract and its verification.
 
 ## LL06 · Cache reuse depends on identity, provenance, and artifact existence
 
@@ -140,7 +166,18 @@ worker survival and persisted recovery. The isolated Docker smoke test verified
 graceful stop and forced-crash recovery while preserving a prior MP4. Outputs use
 unique filenames and probe validation before publication. Analysis threads are not
 hard-cancellable mid-computation; startup terminalizes interrupted work without replay.
-Broader frontend reconciliation remains open (F11/F15).
+The subsequent F11 checkpoint adds frontend reconciliation; job ownership follows below.
+
+**Evidence/protection added 2026-10-20 (A07/F15/F19):** cancelling a threaded await
+must not release the job while its worker thread can still write artifacts or use
+shared model state. `run_blocking` defers cancellation until return; the regression
+blocks a thread, cancels twice and verifies no subsequent job starts or post-cancel
+publication occurs. Atomic admission tests admit one of 20 conflicting operations,
+including HTTP cross-kind races. Injected running/done/failed/cancelled persistence
+failures pause and recover without replaying the handler. Queue overload creates no
+extra row; provider-close failure still closes SQLite. Preserve the completed artifact
+when only its job status could not be saved. Hard thread termination is not supported;
+health reports unavailable workers and uncertain admission requires restart/reconciliation.
 
 ## LL08 · Realtime events complement durable state
 
@@ -150,8 +187,16 @@ poll results, and local IDs using precedence rules that can prefer stale data.
 **Rule:** use a single job collection hydrated from durable state. Merge events and
 polling into it; refresh on reconnect. Do not let a stale transport override newer state.
 
-**Protection:** pending reload, disconnected-SSE, failed-job, and query-refresh tests
-(F11). EventSource reconnection alone cannot recover missed events.
+**Evidence/protection added 2026-10-20 (F11):** one revision-checked Pinia collection
+now accepts SSE, entry/reconnect snapshots and polling. Registry updates/recovery bump
+an additive monotonic revision. Per-project history limits do not exclude active jobs;
+known active jobs that finish outside the window get detail refreshes. One terminal
+observer handles done/failed/cancelled and batches project/query invalidation.
+`frontend/tests/jobs.test.mjs` and `job-store.test.mjs` cover reload hydration,
+disconnected polling, reconnect, late responses, second operations, project isolation,
+errors and timer/stream cleanup. Template tests verify visible errors/cancellation.
+EventSource reconnection alone still cannot recover missed events; snapshots provide
+that recovery. Interactive browser acceptance remains unperformed.
 
 ## LL09 · Keep identity at the granularity the operation needs
 
@@ -167,8 +212,18 @@ restores the original ID/path. Purge is separately described and refuses source 
 
 **Protection:** `test_project_lifecycle.py` covers archive/recreate/renamed restore,
 restart recovery, legacy orphan-directory preservation, active work, stale submission,
-and failed/unsafe purge. Scene-identity regressions remain pending (F06). Preserve
-persisted plan compatibility when changing schemas.
+and failed/unsafe purge. Preserve persisted plan compatibility when changing schemas.
+
+**Evidence/protection added 2026-10-20 (F06):** v2 plans bind scene/file IDs, revision
+and source hash from backend candidates; source bounds are resolved by scene throughout
+fitting/filler. Unique interval matching supports missing model IDs without first-row
+guessing. A lower-quality later blue scene now survives selection and renders blue;
+tests reject changed/deleted IDs, hashes, paths, bounds and stale restored revisions.
+Within-file ordering is checked after reversed selection and filler insertion. Legacy
+v1 JSON remains unchanged; ambiguous references fail while previous downloads work.
+Byte-identical verified inventory revisions remain compatible. Full pacing/narrative
+policy/disclosure were subsequently implemented in the F09 entry above, with explicit
+recognition and legacy-compatibility limits documented separately.
 
 ## LL10 · Measure usefulness before adding inference or abstractions
 

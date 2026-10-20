@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 CONTRACTS = {
+    "orientation": "display.v1",
     "metadata": "meta.v1",
     "scenes": "scenes.v1",
     "visuals": "visuals.v1",
@@ -103,6 +104,8 @@ async def invalidate_contracts(conn, file_id, *, embedding_model, description_mo
     if "scenes" in changed:
         await conn.execute("DELETE FROM scenes WHERE file_id=?", (file_id,))
         changed.update(("visuals", "embeddings", "descriptions"))
+    if "orientation" in changed:
+        changed.add("visuals")
     if "visuals" in changed:
         await conn.execute(
             "DELETE FROM scene_frames WHERE scene_id IN (SELECT id FROM scenes WHERE file_id=?)",

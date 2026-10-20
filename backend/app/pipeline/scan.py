@@ -1,10 +1,10 @@
-import asyncio
 import os
 import stat as statlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..core.db import connect, migrate_project
+from ..core.tasks import run_blocking
 from ..jobs.worker import JobCancelled
 from .provenance import archive_knowledge, mark_source_edits
 
@@ -119,11 +119,13 @@ async def _remove_missing(conn: Any, seen: set[str]) -> int:
     return len(gone)
 
 
-async def scan_project(ctx: "JobContext", payload: dict[str, Any], conn: Any) -> dict[str, int]:
+async def scan_project(
+    ctx: "JobContext", payload: dict[str, Any], conn: Any, *, on_inventory=None
+) -> dict[str, int]:
     root = Path(payload["media_path"])
-    identity = await asyncio.to_thread(_root_identity, root)
+    identity = await run_blocking(_root_identity, root)
     ctx.check_cancelled()
-    entries = await asyncio.to_thread(walk_media, root)
+    entries = await run_blocking(walk_media, root)
     total = len(entries)
     await ctx.progress(done=0, total=total, message=f"Found {total} media files", force=True)
     counts = {"video": 0, "photo": 0}
@@ -146,13 +148,16 @@ async def scan_project(ctx: "JobContext", payload: dict[str, Any], conn: Any) ->
         else:
             await ctx.progress(done=idx)
     ctx.check_cancelled()
-    if await asyncio.to_thread(_root_identity, root) != identity:
+    if await run_blocking(_root_identity, root) != identity:
         raise InventoryError(
             "Media folder changed before reconciliation; preserved existing knowledge."
         )
     removed = await _remove_missing(conn, seen)
     await conn.commit()
-    return {"videos": counts["video"], "photos": counts["photo"], "removed": removed}
+    result = {"videos": counts["video"], "photos": counts["photo"], "removed": removed}
+    if on_inventory is not None:
+        await on_inventory(result)
+    return result
 
 
 async def scan_job_handler(ctx: "JobContext", payload: dict[str, Any]) -> dict[str, int]:
