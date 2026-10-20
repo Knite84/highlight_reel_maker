@@ -19,7 +19,7 @@ async def search_scenes(
         "FROM embeddings e "
         "JOIN scenes s ON s.id = e.scene_id "
         "JOIN files f ON f.id = s.file_id "
-        "WHERE e.model_id = ?"
+        "WHERE e.model_id = ? AND f.source_revision = f.analysis_revision AND f.error IS NULL"
     )
     params: list[Any] = [MODEL_ID]
     if kind in ("video", "photo"):

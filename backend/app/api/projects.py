@@ -276,6 +276,7 @@ async def start_scan(
 @router.post("/{project_id}/analyze", status_code=202)
 async def start_analysis(
     project_id: int,
+    deep_verify: bool = False,
     registry=Depends(get_registry),
     runner: JobRunner = Depends(get_runner),
     settings: Settings = Depends(get_settings_dep),
@@ -292,6 +293,7 @@ async def start_analysis(
         "db_path": str(coredb.project_db_path(settings.projects_root, row["slug"])),
     }
     job_id = await runner.enqueue(
-        project_id=project_id, kind="analyze", handler=analyze_job_handler, payload=payload
+        project_id=project_id, kind="analyze", handler=analyze_job_handler,
+        payload={**payload, "deep_verify": deep_verify},
     )
     return {"job_id": job_id}

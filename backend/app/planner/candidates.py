@@ -14,6 +14,7 @@ FROM scenes s
 JOIN scene_frames sf ON sf.scene_id = s.id AND sf.role = 'primary'
 JOIN files f ON f.id = s.file_id
 WHERE f.error IS NULL
+AND f.source_revision = f.analysis_revision
 """
 
 

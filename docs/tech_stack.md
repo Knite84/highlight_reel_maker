@@ -69,7 +69,14 @@ Vue views / TanStack Query / Pinia
   mutations; queued/running work blocks removal. New storage slugs include a UUID.
 - Inventory: traversal/stat/root errors fail the scan before deletion reconciliation;
   a complete inventory still reconciles intentional source deletions. Analyze uses
-  the same scan service. This does not fix source/version invalidation (F01).
+  the same scan service. Source/analysis revisions prevent stale reuse; optional deep
+  hashing detects changes that preserve inventory size/mtime. Invalidations and source
+  removals preserve SQL knowledge snapshots and previous frame generations.
+- `pipeline/provenance.py`: stage contracts, dependency invalidation, artifact checks,
+  history snapshots and stale-plan markers. Per-stage provenance is recorded in
+  `analysis_stages`; legacy adoption stays explicitly unverified. Legacy databases get
+  an integrity-checked SQLite snapshot before additive migration. See
+  [cache-provenance.md](cache-provenance.md) for limits and recovery.
 - `backend/app/pipeline/`: source inventory, analysis stages, and embedding search.
 - `backend/app/ai/`: OpenAI-compatible HTTP client and lazy SigLIP2 singleton.
 - `backend/app/planner/`: quality scoring, candidate summaries, model planning, schema
@@ -82,8 +89,11 @@ Vue views / TanStack Query / Pinia
 
 Storage uses plain SQL through aiosqlite, WAL journaling, and foreign keys. There is
 no ORM, vector database, distributed job broker, or versioned migration framework.
-Search computes NumPy similarity over up to 4,000 loaded embedding rows. Analysis
-artifacts are presence-cached, with incomplete source/version invalidation today.
+Search computes NumPy similarity over up to 4,000 loaded embedding rows. Source
+revisions and explicit stage/model contracts govern cache reuse. Missing visual
+artifacts repair selectively; unchanged complete caches avoid inference/provider calls.
+Contracts require explicit version bumps; weight changes under the same model ID
+still require pinned revisions/checksums. Orientation and HEIC fixes remain open.
 
 ## Runtime data layout (`%LOCALAPPDATA%\ReelMaker\`)
 
@@ -129,6 +139,12 @@ not move files. Restore may supply a new display name when the old one is in use
   not implemented. Face detection only informs still-photo framing, not recognition.
 
 ## Verification and maintenance
+
+Latest source/cache slice (2026-10-20): **110 fast tests passed on Windows and Linux**,
+one slow test deselected each; Ruff passed both and frontend type/build passed.
+Both images built without recreating live services. Synthetic thumbnail visual QA
+occurred; no new real-media, live-model, audio or browser QA occurred in this slice.
+The Docker migration evidence below belongs to the earlier checkpoint.
 
 Run backend checks from `backend`: `uv run pytest` and `uv run ruff check .`.
 Slow real-model integration is opt-in: `uv run pytest -m slow`. Run the frontend

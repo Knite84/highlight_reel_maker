@@ -44,6 +44,7 @@ const { data: systemStatus } = useQuery({
 const activeJobId = ref<number | null>(null)
 const actionError = ref('')
 const busyAction = ref<'analyze' | null>(null)
+const deepVerify = ref(false)
 
 const job = computed(() => (activeJobId.value === null ? null : jobStore.byId(activeJobId.value)))
 
@@ -163,7 +164,7 @@ async function runAnalysis() {
   busyAction.value = 'analyze'
   actionError.value = ''
   try {
-    const result = await api.post<{ job_id: number }>(`/projects/${projectId}/analyze`)
+    const result = await api.post<{ job_id: number }>(`/projects/${projectId}/analyze?deep_verify=${deepVerify.value}`)
     activeJobId.value = result.job_id
   } catch (e) {
     actionError.value = e instanceof Error ? e.message : String(e)
@@ -369,6 +370,9 @@ const fileList = computed(() => filesQuery.data.value ?? [])
     <div class="page-head">
       <h1>{{ project.name }}</h1>
       <div class="actions">
+        <label title="Reads every source file to detect changes that preserve file size and modification time. Unchanged analysis is reused.">
+          <input v-model="deepVerify" type="checkbox" :disabled="busyAction !== null" /> Verify file contents
+        </label>
         <button :disabled="busyAction !== null" @click="runAnalysis">
           {{ busyAction === 'analyze' ? 'Analyzing…' : 'Analyze' }}
         </button>
@@ -592,6 +596,8 @@ const fileList = computed(() => filesQuery.data.value ?? [])
           <span class="badge" :class="file.kind">{{ file.kind.toUpperCase() }}</span>
           <p class="file-name">{{ file.rel_path }}</p>
           <p class="muted">{{ file.scene_count ?? 0 }} scenes</p>
+          <p v-if="file.provenance_status === 'stale'" class="muted">Source changed — Analyze to refresh its knowledge.</p>
+          <p v-else-if="file.provenance_status === 'legacy'" class="muted">Retained knowledge — original analysis provenance is unverified.</p>
         </article>
       </div>
     </template>

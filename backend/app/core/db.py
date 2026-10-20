@@ -1,4 +1,6 @@
+import sqlite3
 from pathlib import Path
+from uuid import uuid4
 
 import aiosqlite
 
@@ -48,6 +50,9 @@ CREATE TABLE IF NOT EXISTS files (
     size_bytes INTEGER NOT NULL,
     mtime REAL NOT NULL,
     xxhash TEXT,
+    source_revision INTEGER NOT NULL DEFAULT 0,
+    analysis_revision INTEGER NOT NULL DEFAULT 0,
+    verified_at TEXT,
     duration_sec REAL,
     width INTEGER,
     height INTEGER,
@@ -123,9 +128,27 @@ CREATE TABLE IF NOT EXISTS edits (
     plan_json TEXT NOT NULL,
     model_id TEXT,
     render_path TEXT,
+    stale_sources TEXT NOT NULL DEFAULT '[]',
     error TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     rendered_at TEXT
+);
+CREATE TABLE IF NOT EXISTS analysis_stages (
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    stage TEXT NOT NULL,
+    input_revision INTEGER NOT NULL,
+    contract_version TEXT NOT NULL,
+    model_id TEXT,
+    status TEXT NOT NULL CHECK(status IN ('legacy', 'success')),
+    completed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY(file_id, stage)
+);
+CREATE TABLE IF NOT EXISTS knowledge_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    archived_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 """
 
@@ -154,11 +177,31 @@ async def _ensure_column(
 
 
 async def migrate_project(conn: aiosqlite.Connection) -> None:
+    columns = await (await conn.execute("PRAGMA table_info(files)")).fetchall()
+    if columns and "source_revision" not in {column[1] for column in columns}:
+        # SQLite's backup API includes committed WAL data. Never migrate a legacy
+        # knowledge store without first producing a restorable local snapshot.
+        database = await (await conn.execute("PRAGMA database_list")).fetchone()
+        if database[2]:
+            backup_path = Path(database[2]).with_name(
+                f"db.before-source-provenance-{uuid4().hex}.sqlite"
+            )
+            backup = sqlite3.connect(backup_path, check_same_thread=False)
+            try:
+                await conn.backup(backup)
+                if backup.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                    raise RuntimeError(f"Pre-migration backup integrity failed: {backup_path}")
+            finally:
+                backup.close()
     await migrate(conn, PROJECT_SCHEMA)
     await _ensure_column(conn, "files", "rotation", "INTEGER")
     await _ensure_column(conn, "files", "analyzed_at", "TEXT")
+    await _ensure_column(conn, "files", "source_revision", "INTEGER NOT NULL DEFAULT 0")
+    await _ensure_column(conn, "files", "analysis_revision", "INTEGER NOT NULL DEFAULT 0")
+    await _ensure_column(conn, "files", "verified_at", "TEXT")
     await _ensure_column(conn, "edits", "downloaded_at", "TEXT")
     await _ensure_column(conn, "edits", "rendered_duration_sec", "REAL")
+    await _ensure_column(conn, "edits", "stale_sources", "TEXT NOT NULL DEFAULT '[]'")
     await conn.commit()
 
 

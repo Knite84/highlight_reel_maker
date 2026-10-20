@@ -3,7 +3,7 @@ import re
 
 from ..core import repos
 from ..core.config import Settings
-from ..core.db import connect, project_db_path
+from ..core.db import connect, migrate_project, project_db_path
 from ..renderer.render import mark_edit_failed
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,7 @@ async def recover_interrupted(registry, settings: Settings) -> None:
             continue
         conn = await connect(path)
         try:
+            await migrate_project(conn)
             rows = await (
                 await conn.execute("SELECT id FROM edits WHERE status='rendering'")
             ).fetchall()

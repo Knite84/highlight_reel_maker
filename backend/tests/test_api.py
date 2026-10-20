@@ -109,3 +109,35 @@ def test_download_marks_reel_downloaded(client, media_dir):
 
     plans = client.get(f"/api/projects/{project_id}/plans").json()
     assert plans[0]["downloaded_at"] is not None
+
+    async def mark_stale():
+        conn = await connect(db_path)
+        try:
+            await conn.execute("UPDATE edits SET stale_sources=? WHERE id=1", ('{"a.mp4":"old-hash"}',))
+            await conn.commit()
+        finally:
+            await conn.close()
+
+    asyncio.run(mark_stale())
+    rejected = client.post(f"/api/projects/{project_id}/plans/1/render", json={"profile": "proxy"})
+    assert rejected.status_code == 409
+    assert "Generate a new plan" in rejected.json()["detail"]
+    assert client.get(f"/api/projects/{project_id}/plans/1/download").content == b"fake mp4"
+
+
+def test_deep_verification_option_reaches_analysis_job(client, media_dir, monkeypatch):
+    from app.api import projects
+
+    received = []
+
+    async def handler(ctx, payload):
+        received.append(payload)
+        return {}
+
+    monkeypatch.setattr(projects, "analyze_job_handler", handler)
+    created = client.post("/api/projects", json={"name": "Verify", "media_path": str(media_dir)}).json()
+    _wait_job(client, created["scan_job_id"])
+    response = client.post(f"/api/projects/{created['id']}/analyze?deep_verify=true")
+    assert response.status_code == 202
+    assert _wait_job(client, response.json()["job_id"])["status"] == "done"
+    assert received[0]["deep_verify"] is True

@@ -1,5 +1,10 @@
 # Architecture and product effectiveness review
 
+> Source/cache checkpoint 2026-10-20: F01/A05 now have source revisions, stage/model
+> contracts, selective artifact repair, history preservation and protected migration.
+> Legacy provenance remains unverified; F07/A03/A04 and full scene/plan identity are
+> still open. See [cache-provenance.md](cache-provenance.md) and [status.md](status.md).
+
 > Remediation update 2026-10-20: F02/F16, F03/F04 restart/render safety and
 > Docker are implemented. F20 uses Compose ownership/readiness. Subprocess portions
 > of A01/A02 and parts of F10/F14/F15/F17 are addressed. Docker HDR block artifacts were removed via CPU zscale tone mapping;

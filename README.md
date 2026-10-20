@@ -78,6 +78,9 @@ Download still saves a browser copy. See [storage and recovery details](docs/doc
 1. Create a project from a shared Windows folder.
 2. **Analyze** builds reusable scenes, measurements, embeddings/tags, and descriptions.
    Missing/inaccessible folders fail inventory without deleting cached knowledge.
+   Changed sources refresh their dependent analysis; unchanged files reuse it.
+   **Verify file contents** also detects edits that preserve size/modification time.
+   See [cache reuse and recovery](docs/cache-provenance.md) for legacy-data behavior.
 3. **Generate plan** uses your prompt and requested duration; **Render** executes the plan.
 4. Download the resulting MP4. The current UI requests the 720p proxy profile; final-export
    UI and preview correctness remain audit follow-ups.
@@ -87,6 +90,8 @@ existing plans remain usable. Archive retains knowledge/exports; Restore recover
 same project, optionally renamed. Permanently purge is separate and checks source overlap.
 Queued/running work blocks archive/purge. Interrupted jobs reconcile on startup, and a
 failed render preserves the last successful MP4.
+Plans referencing changed sources require Analyze and a new plan; existing exports
+remain downloadable. Database migration creates an integrity-checked local snapshot.
 
 ## Contributor checks
 

@@ -6,12 +6,27 @@ from typing import TYPE_CHECKING, Any
 
 from ..core.db import connect, migrate_project
 from ..jobs.worker import JobCancelled
+from .provenance import archive_knowledge, mark_source_edits
 
 if TYPE_CHECKING:
     from ..jobs.worker import JobContext
 
 VIDEO_EXTS = frozenset(
-    {".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm", ".mts", ".m2ts", ".ts", ".wmv", ".mpg", ".mpeg", ".3gp"}
+    {
+        ".mp4",
+        ".mov",
+        ".mkv",
+        ".avi",
+        ".m4v",
+        ".webm",
+        ".mts",
+        ".m2ts",
+        ".ts",
+        ".wmv",
+        ".mpg",
+        ".mpeg",
+        ".3gp",
+    }
 )
 PHOTO_EXTS = frozenset(
     {".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".tif", ".tiff", ".bmp", ".avif", ".jxl"}
@@ -19,9 +34,12 @@ PHOTO_EXTS = frozenset(
 SKIP_DIRS = {"cache", "edits", "exports", "thumbnails", "frames"}
 
 UPSERT_FILE = """
-INSERT INTO files(rel_path, kind, size_bytes, mtime)
-VALUES (?, ?, ?, ?)
+INSERT INTO files(rel_path, kind, size_bytes, mtime, source_revision)
+VALUES (?, ?, ?, ?, 1)
 ON CONFLICT(rel_path) DO UPDATE SET
+    source_revision = files.source_revision + CASE WHEN
+        files.kind != excluded.kind OR files.size_bytes != excluded.size_bytes
+        OR files.mtime != excluded.mtime THEN 1 ELSE 0 END,
     kind = excluded.kind,
     size_bytes = excluded.size_bytes,
     mtime = excluded.mtime,
@@ -92,6 +110,11 @@ async def _remove_missing(conn: Any, seen: set[str]) -> int:
     rows = await cur.fetchall()
     gone = [row["id"] for row in rows if row["rel_path"] not in seen]
     if gone:
+        for file_id in gone:
+            await archive_knowledge(conn, file_id, "Source absent from complete inventory")
+            await mark_source_edits(
+                conn, next(row["rel_path"] for row in rows if row["id"] == file_id)
+            )
         await conn.executemany("DELETE FROM files WHERE id = ?", [(i,) for i in gone])
     return len(gone)
 
@@ -104,20 +127,29 @@ async def scan_project(ctx: "JobContext", payload: dict[str, Any], conn: Any) ->
     total = len(entries)
     await ctx.progress(done=0, total=total, message=f"Found {total} media files", force=True)
     counts = {"video": 0, "photo": 0}
+    existing = {
+        row["rel_path"]: row for row in await (await conn.execute("SELECT * FROM files")).fetchall()
+    }
     seen: set[str] = set()
     for idx, (rel_path, kind, size, mtime) in enumerate(entries, start=1):
         ctx.check_cancelled()
+        previous = existing.get(rel_path)
+        if previous and (
+            previous["kind"] != kind or previous["size_bytes"] != size or previous["mtime"] != mtime
+        ):
+            await mark_source_edits(conn, rel_path)
         await conn.execute(UPSERT_FILE, (rel_path, kind, size, mtime))
         seen.add(rel_path)
         counts[kind] += 1
         if idx % 50 == 0 or idx == total:
-            await conn.commit()
             await ctx.progress(done=idx, force=True)
         else:
             await ctx.progress(done=idx)
     ctx.check_cancelled()
     if await asyncio.to_thread(_root_identity, root) != identity:
-        raise InventoryError("Media folder changed before reconciliation; preserved existing knowledge.")
+        raise InventoryError(
+            "Media folder changed before reconciliation; preserved existing knowledge."
+        )
     removed = await _remove_missing(conn, seen)
     await conn.commit()
     return {"videos": counts["video"], "photos": counts["photo"], "removed": removed}
@@ -131,7 +163,7 @@ async def scan_job_handler(ctx: "JobContext", payload: dict[str, Any]) -> dict[s
         try:
             return await scan_project(ctx, payload, conn)
         except JobCancelled:
-            await conn.commit()
+            await conn.rollback()
             raise
     finally:
         await conn.close()

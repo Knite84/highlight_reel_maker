@@ -1,4 +1,5 @@
 from pathlib import Path
+from uuid import uuid4
 
 import cv2
 import numpy as np
@@ -56,7 +57,17 @@ def _grab_frame(cap: cv2.VideoCapture, index: int) -> np.ndarray | None:
 def _write_jpeg(cache_dir: Path, rel: str, img: np.ndarray) -> None:
     full_path = cache_dir / rel
     full_path.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(full_path), img, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+    temporary = full_path.with_name(f".{full_path.stem}.{uuid4().hex}.jpg")
+    try:
+        if not cv2.imwrite(str(temporary), img, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]):
+            raise OSError(f"Failed to write frame: {rel}")
+        if not temporary.is_file() or temporary.stat().st_size == 0:
+            raise OSError(f"Empty frame output: {rel}")
+        if cv2.imread(str(temporary)) is None:
+            raise OSError(f"Unreadable frame output: {rel}")
+        temporary.replace(full_path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _frame_metrics(frame: np.ndarray) -> dict:
@@ -102,6 +113,7 @@ def process_video(
     file_id: int,
 ) -> list[dict]:
     cap = cv2.VideoCapture(str(path))
+    generation = uuid4().hex
     results: list[dict] = []
     try:
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -113,7 +125,7 @@ def process_video(
                 "end": end,
                 "primary_rel": None,
                 "secondary_rels": [],
-                "thumb_rel": f"thumbs/{file_id}/s{idx}.jpg",
+                "thumb_rel": f"thumbs/{file_id}/{generation}/s{idx}.jpg",
                 "metrics": {},
             }
             candidates: list[tuple[float, np.ndarray]] = []
@@ -124,9 +136,11 @@ def process_video(
                     frame = _apply_rotation(frame, rotation)
                     candidates.append((_sharpness(frame), frame))
             candidates.sort(key=lambda item: -item[0])
+            if not candidates:
+                raise ValueError(f"No decodable frame for scene {start}-{end} in {path.name}")
             for role_order, (_score, frame) in enumerate(candidates[:3]):
                 role = "primary" if role_order == 0 else f"secondary{role_order}"
-                rel = f"frames/{file_id}/s{idx}_{role}.jpg"
+                rel = f"frames/{file_id}/{generation}/s{idx}_{role}.jpg"
                 resized = _resize_max(frame, MAX_SIDE)
                 _write_jpeg(cache_dir, rel, resized)
                 if role_order == 0:
@@ -175,8 +189,9 @@ def process_photo(path: Path, rotation: int, cache_dir: Path, file_id: int) -> d
     if not already_transposed:
         img = _apply_rotation(img, rotation)
     resized = _resize_max(img, MAX_SIDE)
-    rel = f"frames/{file_id}/s0_primary.jpg"
-    thumb_rel = f"thumbs/{file_id}/s0.jpg"
+    generation = uuid4().hex
+    rel = f"frames/{file_id}/{generation}/s0_primary.jpg"
+    thumb_rel = f"thumbs/{file_id}/{generation}/s0.jpg"
     _write_jpeg(cache_dir, rel, resized)
     _write_jpeg(cache_dir, thumb_rel, _resize_max(img, THUMB_SIDE))
     metrics = _frame_metrics(resized)

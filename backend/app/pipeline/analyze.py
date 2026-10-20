@@ -11,20 +11,20 @@ from ..jobs.worker import JobFailedWithResult
 from .describe import describe_pending_scenes
 from .frames_cv import process_photo_async, process_video_async
 from .metadata import checksum_file, extract_metadata
+from .provenance import (
+    archive_knowledge,
+    check_source,
+    invalidate_contracts,
+    mark_source_edits,
+    missing_visuals,
+    record_stage,
+    source_stamp,
+    stage_present,
+)
 from .scan import scan_project
 from .scenes import detect_scenes
 
 NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
-
-
-async def _count_missing_visuals(conn: Any, file_id: int) -> int:
-    cur = await conn.execute(
-        "SELECT COUNT(*) FROM scenes s "
-        "LEFT JOIN scene_frames sf ON sf.scene_id = s.id AND sf.role = 'primary' "
-        "WHERE s.file_id = ? AND sf.id IS NULL",
-        (file_id,),
-    )
-    return int((await cur.fetchone())[0])
 
 
 async def _store_scene_visuals(conn: Any, scene_id: int, entry: dict) -> None:
@@ -70,10 +70,7 @@ async def analyze_job_handler(ctx: Any, payload: dict) -> dict:
         await migrate_project(conn)
         await ctx.progress(done=0, total=0, message="Scanning folder", force=True)
         await scan_project(ctx, payload, conn)
-        cur = await conn.execute(
-            "SELECT id, rel_path, kind, size_bytes, mtime, xxhash, rotation, analyzed_at "
-            "FROM files ORDER BY rel_path"
-        )
+        cur = await conn.execute("SELECT * FROM files ORDER BY rel_path")
         files = await cur.fetchall()
         total = len(files)
         await ctx.progress(done=0, total=total, message=f"Analyzing {total} files", force=True)
@@ -90,21 +87,84 @@ async def analyze_job_handler(ctx: Any, payload: dict) -> dict:
             try:
                 if not abs_path.is_file():
                     raise FileNotFoundError("source file missing")
-
-                if row["analyzed_at"] is None or row["rotation"] is None:
-                    checksum = row["xxhash"] or await checksum_file(abs_path)
+                stamp = source_stamp(abs_path)
+                if stamp[0] != row["size_bytes"] or abs_path.stat().st_mtime != row["mtime"]:
+                    raise RuntimeError("Source changed after inventory; retry Analyze")
+                revision = row["source_revision"]
+                changed = revision != row["analysis_revision"]
+                checksum = row["xxhash"]
+                work_before = sum(
+                    summary[k] for k in ("metadata", "scenes", "visuals", "embedded", "described")
+                )
+                if changed or not checksum or row["error"] or payload.get("deep_verify", False):
+                    checksum = await checksum_file(abs_path)
+                    check_source(abs_path, stamp)
+                    if row["xxhash"] and checksum != row["xxhash"] and not changed:
+                        revision += 1
+                        changed = True
+                        await mark_source_edits(conn, rel_path)
+                        await conn.execute(
+                            "UPDATE files SET source_revision=? WHERE id=?", (revision, file_id)
+                        )
+                        await conn.commit()
+                    elif changed and checksum == row["xxhash"] and row["analyzed_at"]:
+                        # A timestamp/size signal is only a suspicion; identical bytes
+                        # retain their knowledge and advance the inventory revision.
+                        await conn.execute(
+                            "UPDATE files SET analysis_revision=? WHERE id=?", (revision, file_id)
+                        )
+                        await conn.execute(
+                            "UPDATE analysis_stages SET input_revision=? WHERE file_id=?",
+                            (revision, file_id),
+                        )
+                        changed = False
+                        await mark_source_edits(conn, rel_path, identical=True)
+                prior_meta = await (
+                    await conn.execute(
+                        "SELECT input_revision FROM analysis_stages WHERE file_id=? AND stage='metadata'",
+                        (file_id,),
+                    )
+                ).fetchone()
+                replace_source = changed and (not prior_meta or prior_meta[0] != revision)
+                await invalidate_contracts(
+                    conn,
+                    file_id,
+                    embedding_model=MODEL_ID,
+                    description_model=get_settings().planner_model_id,
+                )
+                current = await (
+                    await conn.execute("SELECT analyzed_at FROM files WHERE id=?", (file_id,))
+                ).fetchone()
+                if replace_source or current["analyzed_at"] is None or row["rotation"] is None:
                     meta = await extract_metadata(abs_path, kind)
+                    check_source(abs_path, stamp)
+                    if replace_source:
+                        await archive_knowledge(conn, file_id, "Source revision changed")
+                        await conn.execute("DELETE FROM scenes WHERE file_id=?", (file_id,))
+                        await conn.execute(
+                            "DELETE FROM analysis_stages WHERE file_id=?", (file_id,)
+                        )
                     await conn.execute(
                         "UPDATE files SET duration_sec=?, width=?, height=?, fps=?, codec=?, "
                         "camera_model=?, gps_lat=?, gps_lon=?, captured_at=?, rotation=?, "
                         f"xxhash=?, stage_version='meta.v1', analyzed_at={NOW_SQL}, error=NULL "
                         "WHERE id=?",
                         (
-                            meta["duration_sec"], meta["width"], meta["height"], meta["fps"],
-                            meta["codec"], meta["camera_model"], meta["gps_lat"], meta["gps_lon"],
-                            meta["captured_at"], meta["rotation"], checksum, file_id,
+                            meta["duration_sec"],
+                            meta["width"],
+                            meta["height"],
+                            meta["fps"],
+                            meta["codec"],
+                            meta["camera_model"],
+                            meta["gps_lat"],
+                            meta["gps_lon"],
+                            meta["captured_at"],
+                            meta["rotation"],
+                            checksum,
+                            file_id,
                         ),
                     )
+                    await record_stage(conn, file_id, "metadata", revision)
                     await conn.commit()
                     summary["metadata"] += 1
 
@@ -121,6 +181,7 @@ async def analyze_job_handler(ctx: Any, payload: dict) -> dict:
                         spans = await detect_scenes(
                             abs_path, meta_row["duration_sec"], meta_row["fps"]
                         )
+                        check_source(abs_path, stamp)
                         for start, end in spans:
                             await conn.execute(
                                 "INSERT OR IGNORE INTO scenes(file_id, start_sec, end_sec, "
@@ -128,30 +189,40 @@ async def analyze_job_handler(ctx: Any, payload: dict) -> dict:
                                 (file_id, start, end),
                             )
                         summary["scenes"] += len(spans)
+                        await record_stage(conn, file_id, "scenes", revision)
                 else:
-                    await conn.execute(
+                    inserted = await conn.execute(
                         "INSERT OR IGNORE INTO scenes(file_id, start_sec, end_sec, stage_version)"
                         " VALUES (?, 0, 0, 'scenes.v1')",
                         (file_id,),
                     )
+                    if inserted.rowcount:
+                        await record_stage(conn, file_id, "scenes", revision)
                 await conn.commit()
 
-                if await _count_missing_visuals(conn, file_id) > 0:
+                broken = await missing_visuals(conn, cache_dir, file_id)
+                if broken:
                     cur = await conn.execute(
                         "SELECT id, start_sec, end_sec FROM scenes WHERE file_id=? ORDER BY start_sec",
                         (file_id,),
                     )
-                    scene_rows = await cur.fetchall()
+                    scene_rows = [r for r in await cur.fetchall() if r["id"] in broken]
                     rotation = meta_row["rotation"] or 0
                     if kind == "video":
                         spans = [(r["start_sec"], r["end_sec"]) for r in scene_rows]
-                        entries = await process_video_async(abs_path, rotation, spans, cache_dir, file_id)
+                        entries = await process_video_async(
+                            abs_path, rotation, spans, cache_dir, file_id
+                        )
                     else:
-                        entries = [await process_photo_async(abs_path, rotation, cache_dir, file_id)]
+                        entries = [
+                            await process_photo_async(abs_path, rotation, cache_dir, file_id)
+                        ]
+                    check_source(abs_path, stamp)
                     by_start = {r["start_sec"]: r["id"] for r in scene_rows}
                     for entry in entries:
                         await _store_scene_visuals(conn, by_start[entry["start"]], entry)
                         summary["visuals"] += 1
+                    await record_stage(conn, file_id, "visuals", revision)
                     await conn.commit()
 
                 if not embeddings_disabled:
@@ -163,6 +234,8 @@ async def analyze_job_handler(ctx: Any, payload: dict) -> dict:
                         )
                     else:
                         summary["embedded"] += embedded
+                        if embedded:
+                            await record_stage(conn, file_id, "embeddings", revision, MODEL_ID)
 
                 if not descriptions_disabled:
                     try:
@@ -170,6 +243,14 @@ async def analyze_job_handler(ctx: Any, payload: dict) -> dict:
                             conn, cache_dir, file_id, provider_holder
                         )
                         summary["described"] += described
+                        if described:
+                            await record_stage(
+                                conn,
+                                file_id,
+                                "descriptions",
+                                revision,
+                                get_settings().planner_model_id,
+                            )
                     except ProviderError as exc:
                         descriptions_disabled = True
                         summary["errors"].append(
@@ -178,7 +259,38 @@ async def analyze_job_handler(ctx: Any, payload: dict) -> dict:
                                 "error": f"scene descriptions skipped: {str(exc)[:160]}",
                             }
                         )
+                check_source(abs_path, stamp)
+                # Detect even a writer that restored size/mtime during the expensive stages.
+                worked = (
+                    sum(
+                        summary[k]
+                        for k in ("metadata", "scenes", "visuals", "embedded", "described")
+                    )
+                    > work_before
+                )
+                if (changed or worked) and await checksum_file(abs_path) != checksum:
+                    raise RuntimeError("Source content changed during analysis; retry Analyze")
+                await conn.execute(
+                    f"UPDATE files SET analysis_revision=?,xxhash=?,verified_at={NOW_SQL},error=NULL WHERE id=?",
+                    (revision, checksum, file_id),
+                )
+                for stage in ("metadata", "scenes", "visuals", "embeddings", "descriptions"):
+                    exists = await (
+                        await conn.execute(
+                            "SELECT 1 FROM analysis_stages WHERE file_id=? AND stage=?",
+                            (file_id, stage),
+                        )
+                    ).fetchone()
+                    if not exists and await stage_present(conn, file_id, stage):
+                        # Adoption records uncertainty; migration never certifies old evidence.
+                        model = {
+                            "embeddings": MODEL_ID,
+                            "descriptions": get_settings().planner_model_id,
+                        }.get(stage)
+                        await record_stage(conn, file_id, stage, revision, model, legacy=True)
+                await conn.commit()
             except Exception as exc:
+                await conn.rollback()
                 await conn.execute(
                     "UPDATE files SET error=? WHERE id=?",
                     (f"{type(exc).__name__}: {exc}"[:500], file_id),
@@ -192,16 +304,24 @@ async def analyze_job_handler(ctx: Any, payload: dict) -> dict:
             details = "; ".join(entry["error"] for entry in summary["errors"][:3])
             raise JobFailedWithResult(
                 f"Analysis incomplete: {details}. Successful cached stages were retained; "
-                "correct the problem and retry Analyze.", summary,
+                "correct the problem and retry Analyze.",
+                summary,
             )
         return summary
     finally:
         await conn.close()
 
 
-async def _describe_file_scenes(
-    conn: Any, cache_dir: Path, file_id: int, holder: dict
-) -> int:
+async def _describe_file_scenes(conn: Any, cache_dir: Path, file_id: int, holder: dict) -> int:
+    pending = await (
+        await conn.execute(
+            "SELECT 1 FROM scenes s WHERE s.file_id=? AND NOT EXISTS "
+            "(SELECT 1 FROM scene_descriptions d WHERE d.scene_id=s.id) LIMIT 1",
+            (file_id,),
+        )
+    ).fetchone()
+    if not pending:
+        return 0
     provider: LLMProvider = holder.get("provider") or get_provider()
     model: str | None = holder.get("vision_model")
     if not model:
@@ -209,6 +329,8 @@ async def _describe_file_scenes(
         model = await provider.resolve_model(settings.planner_model_id, prefer_vision=True)
         holder["vision_model"] = model
     result = await describe_pending_scenes(conn, provider, model, cache_dir, file_id=file_id)
+    if result["failed"]:
+        raise ProviderError(f"{result['failed']} scene descriptions failed; retry Analyze")
     return int(result["described"])
 
 
@@ -231,8 +353,11 @@ async def _embed_file_scenes(conn: Any, cache_dir: Path, file_id: int) -> tuple[
 
     paths = [str(cache_dir / row["path"]) for row in pending]
     vectors = await asyncio.to_thread(embedder.encode_images, paths)
+    if len(vectors) != len(pending):
+        raise RuntimeError("Embedding provider returned an incomplete batch")
     for row, vector in zip(pending, vectors):
         scene_id = row["id"]
+        await conn.execute("DELETE FROM scene_tags WHERE scene_id=?", (scene_id,))
         await conn.execute(
             "INSERT OR REPLACE INTO embeddings(scene_id, vector, model_id) VALUES (?, ?, ?)",
             (scene_id, vector_to_blob(vector), MODEL_ID),

@@ -21,7 +21,7 @@ router = APIRouter(prefix="/projects/{project_id}/plans", tags=["plans"])
 
 EDIT_COLUMNS = (
     "id, prompt, target_duration_sec, status, model_id, render_path, error, created_at, "
-    "rendered_duration_sec, downloaded_at"
+    "rendered_duration_sec, downloaded_at, stale_sources"
 )
 
 
@@ -178,7 +178,9 @@ async def render_plan(
         raise HTTPException(status_code=404, detail="Plan not found")
     conn = await coredb.connect(db_path)
     try:
-        await _edit_or_404(conn, edit_id)
+        row = await _edit_or_404(conn, edit_id)
+        if json.loads(row["stale_sources"]):
+            raise HTTPException(status_code=409, detail="Plan sources changed; Analyze then Generate a new plan. Previous exports remain downloadable.")
     finally:
         await conn.close()
     active = await repos.get_active_job_for(registry, project_id, "render")

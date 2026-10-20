@@ -1,5 +1,44 @@
 # Project Status — Handoff Notes
 
+## 2026-10-20 — Source/cache foundation (package 2, F01/A05)
+
+Implemented the source revision, stage contract and artifact repair portion of
+package 2. See [cache-provenance.md](cache-provenance.md) for behavior and recovery.
+F07 orientation, A03 HEIC initialization and A04 frame timestamp ordering are next;
+this is not completion of the entire original package 2.
+
+- Inventory changes mark a source revision stale instead of silently reusing its
+  knowledge. Analyze hashes suspect files, reuses byte-identical content and rebuilds
+  only changed descendants. **Verify file contents** detects same-size edits with
+  restored mtime. Stale sources are excluded from candidates and semantic search.
+- Stage contract/model changes invalidate their own dependency branch. Missing/empty
+  visual artifacts repair only affected scenes without repeating existing model calls.
+  Complete caches avoid model loading and provider resolution. Partial failures retry
+  successful stages; individual description/batch failures no longer imply completion.
+- Invalidation/removal snapshots SQL knowledge (including vectors) into
+  `knowledge_history`; generation paths retain prior artifact files. No automatic
+  history cleanup is implemented. Legacy analysis is retained and explicitly unverified.
+- Before migrating legacy project schemas, startup creates an integrity-checked SQLite
+  snapshot beside the database. New columns/tables are additive. Disposable database
+  tests verify backup creation, integrity, restoration and repeat migration.
+- Saved plans referencing replaced/removed sources remain stored but cannot rerender;
+  Analyze then Generate a new plan. Old exports remain downloadable. Rendering compares
+  known source hashes before encoding and publication, even without a preceding scan.
+  Stable scene references and complete plan-version enforcement remain package 5 work.
+
+Verification: **110 fast pytest tests passed on Windows and Linux**, with one slow
+test deselected per run; Ruff passed both; frontend type/build passed; both Docker
+images built. Nineteen cache regressions plus API tests cover the new behavior.
+Viewed a synthetic four-quadrant thumbnail; existing synthetic FFmpeg regression
+tests passed. No new real-media visual/audio QA, interactive browser QA or live-model
+test was performed. No real collection was migrated or reanalyzed in this slice.
+Known Starlette/httpx and npm environment warnings remain.
+
+The running containers were left on their previous build; images/source are updated.
+Run `scripts/start-dev.ps1` (or `docker compose up -d --build --wait`) to activate.
+That startup performs the protected migration. Preserve retained cache generations
+and backups until explicit recovery/cleanup decisions are made.
+
 ## 2026-10-20 — Docker and lifecycle foundation
 
 This supersedes the native-launcher and pending restart-recovery notes below.

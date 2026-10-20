@@ -20,6 +20,10 @@ export interface MediaFile {
   error: string | null
   analyzed_at?: string | null
   scene_count?: number
+  source_revision?: number
+  analysis_revision?: number
+  verified_at?: string | null
+  provenance_status?: 'legacy' | 'tracked' | 'stale'
 }
 
 export interface ArchivedProject extends Project {

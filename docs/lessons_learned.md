@@ -95,8 +95,22 @@ errors, and media stat failures; cancellation is checked before reconciliation.
 **Protection:** `test_scan.py` verifies full file/scene/embedding/description preservation
 on incomplete inventories, late root loss, and cancellation, plus intentional deletion
 on a successful scan. API coverage verifies failed Analyze retains counts and reports
-the inventory error. Changed-source, missing-artifact, and model-version regressions
-remain pending (F01). A successful inventory is not proof of cache freshness.
+the inventory error. The initially pending changed-source, missing-artifact and
+model-version regressions are covered by the follow-up below. A successful inventory
+alone is not proof of cache freshness.
+
+**Evidence/protection added 2026-10-20:** source revisions now separate inventory
+identity from analyzed identity. Hashing suspects avoids inference for timestamp-only
+changes; explicit deep verification finds same-size edits with restored mtime.
+Per-stage contracts isolate invalidation. Missing thumbnails repair visuals without
+repeating model calls; complete caches avoid even provider model resolution.
+Source changes during work fail before success, and render-time hashes reject
+changed footage even without a rescan. Stale plans cannot overwrite prior exports.
+`test_cache_provenance.py` covers those boundaries, legacy adoption, generation paths,
+model/contract changes and retries. Legacy data is explicitly unverified, not erased;
+invalidation snapshots SQL knowledge and preserves old artifact files. Pre-migration
+SQLite backups are integrity checked; backup/restore is tested on disposable copies.
+Model weights changed under an unchanged ID still need pinned revisions (F17).
 
 ## LL07 · A job and its domain artifact need one lifecycle
 
@@ -182,6 +196,12 @@ washed-out appearance still needs broader HDR color QA.
 Docker builds from Windows also inherited executable flags on Python files; Linux
 Ruff caught EXE002 failures missed on Windows. The image now normalizes source/test/
 tool file modes and passes Linux Ruff; keep cross-platform checks for deployment changes.
+
+**Evidence/protection added 2026-10-20:** ignoring `cv2.imwrite`'s Boolean result
+could cache nonexistent frames as success. Writes now validate nonempty decodable
+temporary JPEGs before atomic publication to unique generation paths. A failed-write
+regression verifies no frame rows or downstream inference are published, and retry
+recovers. Video scenes with no decodable candidates fail rather than cache a null frame.
 
 ## LL12 · Put state in the store that matches its scope
 

@@ -9,7 +9,8 @@ from ..core.config import get_settings
 from ..core.db import connect, migrate_project
 from ..core.paths import host_path, local_path
 from ..core.processes import run_process
-from ..pipeline.metadata import parse_probe_data
+from ..pipeline.metadata import checksum_file, parse_probe_data
+from ..pipeline.provenance import mark_source_edits
 from ..planner.schemas import EditPlan
 from .encode import canvas_for, resolve_encoder
 from .filtergraph import build_render_args
@@ -93,10 +94,14 @@ async def _render_attempt(ctx, payload, db_path, edit_id, temporary_files):
     try:
         await migrate_project(conn)
         row = await (
-            await conn.execute("SELECT plan_json FROM edits WHERE id=?", (edit_id,))
+            await conn.execute("SELECT plan_json,stale_sources FROM edits WHERE id=?", (edit_id,))
         ).fetchone()
         if row is None:
             raise RuntimeError(f"edit {edit_id} not found")
+        if json.loads(row["stale_sources"]):
+            raise RuntimeError(
+                "Plan source changed or was removed; Analyze then Generate a new plan. Previous exports remain downloadable."
+            )
         await conn.execute("UPDATE edits SET status='rendering',error=NULL WHERE id=?", (edit_id,))
         await conn.commit()
         plan = EditPlan.model_validate(json.loads(row["plan_json"]))
@@ -107,6 +112,11 @@ async def _render_attempt(ctx, payload, db_path, edit_id, temporary_files):
         ).fetchall()
         image_rels = frozenset(row["rel_path"] for row in photos)
         rotations = {row["rel_path"]: int(row["rotation"]) for row in photos}
+        known_sources = {
+            row["rel_path"]: row["xxhash"]
+            for row in await (await conn.execute("SELECT rel_path,xxhash FROM files")).fetchall()
+            if row["xxhash"]
+        }
     finally:
         await conn.close()
 
@@ -129,6 +139,7 @@ async def _render_attempt(ctx, payload, db_path, edit_id, temporary_files):
     photo_sources = {rel: path for rel, path in sources.items() if rel in image_rels}
     if photo_sources:
         focus = await asyncio.to_thread(compute_focus_points, photo_sources, rotations)
+    await _verify_sources(db_path, sources, known_sources)
     ctx.check_cancelled()
     encoder, flags = await resolve_encoder(profile)
     width, height = canvas_for(profile)
@@ -151,9 +162,7 @@ async def _render_attempt(ctx, payload, db_path, edit_id, temporary_files):
     # source despite a successful exit. Use the portable CPU tone mapper there;
     # NVENC still performs the final encode. Keep native capability fallback.
     engines = (
-        ["libplacebo", "zscale"]
-        if hdr_rels and not get_settings().container_mode
-        else ["zscale"]
+        ["libplacebo", "zscale"] if hdr_rels and not get_settings().container_mode else ["zscale"]
     )
     for engine in engines:
         args, total_seconds = build_render_args(
@@ -196,6 +205,7 @@ async def _render_attempt(ctx, payload, db_path, edit_id, temporary_files):
         raise RuntimeError("No usable HDR rendering path")
 
     ctx.check_cancelled()
+    await _verify_sources(db_path, sources, known_sources)
     if not temporary_output.is_file() or temporary_output.stat().st_size == 0:
         raise RuntimeError("Render produced no nonempty output")
     measured = await probe_media(temporary_output)
@@ -226,3 +236,24 @@ async def _render_attempt(ctx, payload, db_path, edit_id, temporary_files):
         "encoder": encoder,
         "profile": profile,
     }
+
+
+async def _verify_sources(db_path, sources, known_sources):
+    for rel, source in sources.items():
+        expected = known_sources.get(rel)
+        if expected and await checksum_file(source) != expected:
+            conn = await connect(db_path)
+            try:
+                await mark_source_edits(conn, rel)
+                await conn.execute(
+                    "UPDATE files SET source_revision=source_revision+1, "
+                    "error='Source changed; retry Analyze' WHERE rel_path=? "
+                    "AND source_revision=analysis_revision",
+                    (rel,),
+                )
+                await conn.commit()
+            finally:
+                await conn.close()
+            raise RuntimeError(
+                "Plan source content changed; Analyze then Generate a new plan. Previous exports remain downloadable."
+            )

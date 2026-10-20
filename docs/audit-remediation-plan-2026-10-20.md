@@ -1,7 +1,7 @@
 # Independent audit and proposed remediation plan
 
 Date: 2026-10-20. Reviewed checkout: `fc9938e` (`architectural review cleanup phase 1.`).
-Status: **package 1 and subsequently approved Docker/lifecycle foundation implemented; remaining work is proposed**.
+Status: **package 1, Docker/lifecycle foundation and the source/cache portion of package 2 implemented; remaining work is proposed**.
 
 ## Accepted decisions and package 1 handoff (2026-10-20)
 
@@ -34,6 +34,15 @@ now uses CPU zscale with NVENC encoding. Three corrected frames were clean of bl
 but the more washed-out appearance needs broader HDR color acceptance. All other audit contracts remain in the backlog.
 
 ## Assessment
+
+Implementation checkpoint 2026-10-20: source revisions, deep verification, stage/model
+contracts, selective missing-artifact repair, retained history/generations and protected
+legacy migration now address F01/A05. Referencing stale plans are blocked while prior
+exports remain downloadable. See [cache-provenance.md](cache-provenance.md) and
+[status.md](status.md) for limitations and 110-test cross-platform evidence. F07/A03/A04
+(orientation, fresh-process HEIC and chronological frame evidence) remain next, along
+with source/scene identity in the full versioned edit-plan contract. Actual weight
+revision/checksum enforcement is still F17; contract bumps remain explicit.
 
 Keep Vue, TypeScript, FastAPI, SQLite, FFmpeg, and the separation between analysis,
 planning, and rendering. The main weaknesses are inconsistent contracts and missing
