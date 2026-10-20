@@ -84,6 +84,8 @@ CREATE TABLE IF NOT EXISTS scene_frames (
     scene_id INTEGER NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
     role TEXT NOT NULL CHECK (role IN ('primary', 'secondary')),
     path TEXT NOT NULL,
+    timestamp_sec REAL,
+    timestamp_source TEXT,
     blur REAL,
     brightness REAL,
     contrast REAL,
@@ -199,6 +201,8 @@ async def migrate_project(conn: aiosqlite.Connection) -> None:
     await _ensure_column(conn, "files", "source_revision", "INTEGER NOT NULL DEFAULT 0")
     await _ensure_column(conn, "files", "analysis_revision", "INTEGER NOT NULL DEFAULT 0")
     await _ensure_column(conn, "files", "verified_at", "TEXT")
+    await _ensure_column(conn, "scene_frames", "timestamp_sec", "REAL")
+    await _ensure_column(conn, "scene_frames", "timestamp_source", "TEXT")
     await _ensure_column(conn, "edits", "downloaded_at", "TEXT")
     await _ensure_column(conn, "edits", "rendered_duration_sec", "REAL")
     await _ensure_column(conn, "edits", "stale_sources", "TEXT NOT NULL DEFAULT '[]'")

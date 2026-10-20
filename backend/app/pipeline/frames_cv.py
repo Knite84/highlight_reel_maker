@@ -1,8 +1,11 @@
+import math
 from pathlib import Path
 from uuid import uuid4
 
 import cv2
 import numpy as np
+
+from .images import ensure_image_support
 
 MAX_SIDE = 512
 THUMB_SIDE = 384
@@ -128,21 +131,42 @@ def process_video(
                 "thumb_rel": f"thumbs/{file_id}/{generation}/s{idx}.jpg",
                 "metrics": {},
             }
-            candidates: list[tuple[float, np.ndarray]] = []
+            candidates: list[tuple[float, float, str, np.ndarray]] = []
             for fraction in (0.25, 0.5, 0.75):
                 t = start + (end - start) * fraction
-                frame = _grab_frame(cap, int(t * fps))
+                frame_index = int(t * fps)
+                frame = _grab_frame(cap, frame_index)
                 if frame is not None:
+                    timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000
+                    timestamp_source = "decoder_msec"
+                    if (
+                        not math.isfinite(timestamp)
+                        or timestamp < 0
+                        or (frame_index > 0 and timestamp == 0)
+                    ):
+                        timestamp = frame_index / fps
+                        timestamp_source = "frame_index_estimate"
                     frame = _apply_rotation(frame, rotation)
-                    candidates.append((_sharpness(frame), frame))
+                    candidates.append((_sharpness(frame), timestamp, timestamp_source, frame))
             candidates.sort(key=lambda item: -item[0])
             if not candidates:
                 raise ValueError(f"No decodable frame for scene {start}-{end} in {path.name}")
-            for role_order, (_score, frame) in enumerate(candidates[:3]):
+            entry["frame_samples"] = []
+            for role_order, (_score, timestamp, timestamp_source, frame) in enumerate(
+                candidates[:3]
+            ):
                 role = "primary" if role_order == 0 else f"secondary{role_order}"
                 rel = f"frames/{file_id}/{generation}/s{idx}_{role}.jpg"
                 resized = _resize_max(frame, MAX_SIDE)
                 _write_jpeg(cache_dir, rel, resized)
+                entry["frame_samples"].append(
+                    {
+                        "role": "primary" if role_order == 0 else "secondary",
+                        "path": rel,
+                        "timestamp_sec": timestamp,
+                        "timestamp_source": timestamp_source,
+                    }
+                )
                 if role_order == 0:
                     entry["primary_rel"] = rel
                     entry["metrics"] = _frame_metrics(resized)
@@ -163,18 +187,12 @@ def process_video(
 
 
 def _load_image_bgr(path: Path) -> tuple["np.ndarray", bool]:
+    ensure_image_support(path)
     img = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if img is not None:
         return img, False
-    try:
-        from pillow_heif import register_heif_opener
-    except ImportError as exc:
-        raise ValueError(
-            f"unreadable image format {path.suffix} (install pillow-heif for HEIC support)"
-        ) from exc
     from PIL import Image, ImageOps
 
-    register_heif_opener()
     with Image.open(path) as pil_img:
         transposed = ImageOps.exif_transpose(pil_img)
         rgb = transposed.convert("RGB")
@@ -203,6 +221,9 @@ def process_photo(path: Path, rotation: int, cache_dir: Path, file_id: int) -> d
         "end": 0.0,
         "primary_rel": rel,
         "secondary_rels": [],
+        "frame_samples": [
+            {"role": "primary", "path": rel, "timestamp_sec": 0.0, "timestamp_source": "still"}
+        ],
         "thumb_rel": thumb_rel,
         "metrics": metrics,
     }
@@ -216,9 +237,7 @@ async def process_video_async(
     return await asyncio.to_thread(process_video, path, rotation, scenes, cache_dir, file_id)
 
 
-async def process_photo_async(
-    path: Path, rotation: int, cache_dir: Path, file_id: int
-) -> dict:
+async def process_photo_async(path: Path, rotation: int, cache_dir: Path, file_id: int) -> dict:
     import asyncio
 
     return await asyncio.to_thread(process_photo, path, rotation, cache_dir, file_id)

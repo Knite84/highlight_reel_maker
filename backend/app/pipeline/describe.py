@@ -15,7 +15,7 @@ DESCRIBE_SYSTEM = (
 
 PROMPT_TEMPLATE = (
     "Analyze this scene (span {start:.1f}s to {end:.1f}s in its source clip). "
-    "The frames are shown in chronological order.\n\n"
+    "{frame_order}\n\n"
     "Return JSON with exactly these keys:\n"
     '- "description": one or two sentences describing what happens\n'
     '- "objects": array of up to 8 notable objects/nouns visible\n'
@@ -71,17 +71,31 @@ class SceneDescription(BaseModel):
         )
 
 
-def frame_paths_for_scene(cache_dir: Path, primary_rel: str | None, secondary_rels: list[str]) -> list[Path]:
-    paths: list[Path] = []
-    if primary_rel:
-        candidate = cache_dir / primary_rel
-        if candidate.is_file():
-            paths.append(candidate)
-    for rel in secondary_rels[:2]:
-        candidate = cache_dir / rel
-        if candidate.is_file():
-            paths.append(candidate)
-    return paths
+def frame_paths_for_scene(cache_dir: Path, frames: list[dict]) -> tuple[list[Path], str]:
+    present = []
+    for frame in frames:
+        candidate = (cache_dir / frame["path"]).resolve()
+        if candidate.is_relative_to(cache_dir.resolve()) and candidate.is_file():
+            present.append(frame)
+    if not present:
+        return [], "No representative frames available."
+    if any(frame["timestamp_sec"] is None for frame in present):
+        # Old roles encode quality, not time. Do not manufacture chronology.
+        chosen = next((frame for frame in present if frame["role"] == "primary"), present[0])
+        return [cache_dir / chosen["path"]], (
+            "One representative frame is shown. Its source timestamp is unknown; "
+            "do not infer temporal progression or camera motion from frame ordering."
+        )
+    present.sort(key=lambda frame: (frame["timestamp_sec"], frame["id"]))
+    selected = present[:3]
+    times = ", ".join(
+        f"{frame['timestamp_sec']:.3f}s"
+        + (" (estimated)" if frame["timestamp_source"] == "frame_index_estimate" else "")
+        for frame in selected
+    )
+    return [cache_dir / frame["path"] for frame in selected], (
+        f"The frames are shown in chronological order at source timestamps: {times}."
+    )
 
 
 async def describe_pending_scenes(
@@ -94,13 +108,12 @@ async def describe_pending_scenes(
     max_scenes: int | None = None,
 ) -> dict[str, int]:
     cur = await conn.execute(
-        "SELECT s.id, s.start_sec, s.end_sec, "
-        "MAX(CASE WHEN sf.role='primary' THEN sf.path END) AS primary_path "
+        "SELECT DISTINCT s.id, s.start_sec, s.end_sec "
         "FROM scenes s "
         "JOIN scene_frames sf ON sf.scene_id = s.id "
         "WHERE s.file_id = ? AND NOT EXISTS ("
         "  SELECT 1 FROM scene_descriptions d WHERE d.scene_id = s.id"
-        ") GROUP BY s.id ORDER BY s.start_sec",
+        ") ORDER BY s.start_sec",
         (file_id,),
     )
     rows = await cur.fetchall()
@@ -108,25 +121,27 @@ async def describe_pending_scenes(
         return {"described": 0, "failed": 0}
     described = 0
     failed = 0
-    secondary_cache: dict[int, list[str]] = {}
+    frame_cache: dict[int, list[dict]] = {}
     cur2 = await conn.execute(
-        "SELECT scene_id, path FROM scene_frames WHERE role = 'secondary' AND scene_id IN "
+        "SELECT id,scene_id,role,path,timestamp_sec,timestamp_source FROM scene_frames WHERE scene_id IN "
         f"({','.join('?' * len(rows))})",
         [row["id"] for row in rows],
     )
-    for sec_row in await cur2.fetchall():
-        secondary_cache.setdefault(int(sec_row["scene_id"]), []).append(sec_row["path"])
+    for frame_row in await cur2.fetchall():
+        frame_cache.setdefault(int(frame_row["scene_id"]), []).append(dict(frame_row))
 
     for row in rows:
         if max_scenes is not None and described >= max_scenes:
             break
-        image_paths = frame_paths_for_scene(
-            cache_dir, row["primary_path"], secondary_cache.get(int(row["id"]), [])
+        image_paths, frame_order = frame_paths_for_scene(
+            cache_dir, frame_cache.get(int(row["id"]), [])
         )
         if not image_paths:
             failed += 1
             continue
-        prompt_text = PROMPT_TEMPLATE.format(start=row["start_sec"], end=row["end_sec"])
+        prompt_text = PROMPT_TEMPLATE.format(
+            start=row["start_sec"], end=row["end_sec"], frame_order=frame_order
+        )
         parts = provider.build_vision_prompt(prompt_text, image_paths)
         try:
             data = await provider.chat_json(

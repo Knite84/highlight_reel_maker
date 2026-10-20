@@ -35,6 +35,13 @@ but the more washed-out appearance needs broader HDR color acceptance. All other
 
 ## Assessment
 
+Scoped follow-up 2026-10-20: A03's HEIC initialization and A04's frame evidence
+ordering are implemented and verified with fresh subprocesses and captured provider
+inputs. Nullable timestamps preserve legacy rows; unknown chronology is disclosed.
+Tracked descriptions selectively upgrade to contract v2, retaining history and
+frame/embedding caches. Broader decoder/orientation normalization remains F07.
+See [status.md](status.md) for 115-test cross-platform evidence and QA limits.
+
 Implementation checkpoint 2026-10-20: source revisions, deep verification, stage/model
 contracts, selective missing-artifact repair, retained history/generations and protected
 legacy migration now address F01/A05. Referencing stale plans are blocked while prior

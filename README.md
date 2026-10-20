@@ -81,6 +81,8 @@ Download still saves a browser copy. See [storage and recovery details](docs/doc
    Changed sources refresh their dependent analysis; unchanged files reuse it.
    **Verify file contents** also detects edits that preserve size/modification time.
    See [cache reuse and recovery](docs/cache-provenance.md) for legacy-data behavior.
+   HEIC initializes automatically. New vision frame inputs follow recorded timestamps;
+   older frames without timestamps use one representative for new descriptions.
 3. **Generate plan** uses your prompt and requested duration; **Render** executes the plan.
 4. Download the resulting MP4. The current UI requests the 720p proxy profile; final-export
    UI and preview correctness remain audit follow-ups.

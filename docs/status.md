@@ -1,5 +1,33 @@
 # Project Status — Handoff Notes
 
+## 2026-10-20 — Scoped HEIC initialization and frame ordering (A03/A04)
+
+- Shared lazy HEIF initialization runs before metadata opens HEIC/HEIF, including
+  uppercase extensions, and before frame decoding. Metadata dimensions are read off
+  the event loop. New fresh-process tests run scan, metadata and visuals without
+  test-side registration in the child process.
+- Sample timestamps and their provenance are persisted in nullable frame columns.
+  Sharpness still selects the primary/thumbnail; vision inputs sort by source time.
+  Decoder milliseconds are used when available; fallback frame-index/FPS estimates
+  are explicitly labeled. This is not a frame-accurate VFR seeking overhaul.
+- Existing frame rows/files remain intact. For new descriptions whose legacy frames
+  lack timestamps, send one representative frame and explicitly state that temporal
+  order is unknown. Never guess chronology from primary/secondary roles.
+- Description contract `describe.v2-chronological` invalidates the description branch
+  of previously tracked v1 analysis on the next Analyze. Prior SQL knowledge is
+  archived by the existing invalidation mechanism; scene detection, frames and
+  embeddings are reused. Untracked legacy descriptions stay retained/unverified.
+  Re-describing requires the external Unsloth model as usual.
+
+Verification: **115 fast pytest tests passed on Windows and Linux**, one slow test
+deselected each; Ruff passed both, frontend type/build passed, backend image built.
+Five new tests cover fresh HEIC/HEIF processes, sharpest-last chronology, estimated
+timestamp labeling and legacy migration/fallback. Viewed a synthetic HEIC thumbnail;
+no new real-media/audio, interactive browser or live-model QA occurred. Source media
+and real project databases were not changed; running services were not recreated.
+Run `scripts/start-dev.ps1` to activate the built changes. Broader orientation
+normalization and its EXIF 1–8/video verification remain F07, outside this slice.
+
 ## 2026-10-20 — Source/cache foundation (package 2, F01/A05)
 
 Implemented the source revision, stage contract and artifact repair portion of

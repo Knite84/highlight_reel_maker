@@ -7,6 +7,8 @@ from pathlib import Path
 
 import xxhash
 
+from .images import image_size_sync
+
 _TIMEOUT_SECONDS = 600
 
 
@@ -181,10 +183,7 @@ async def extract_metadata(path: Path, kind: str) -> dict:
             continue
         meta[key] = value
     if meta["width"] is None and meta["height"] is None and kind == "photo":
-        from PIL import Image
-
-        with Image.open(path) as img:
-            meta["width"], meta["height"] = img.size
+        meta["width"], meta["height"] = await asyncio.to_thread(image_size_sync, path)
         exif_rotation = await asyncio.to_thread(_exif_orientation_sync, path)
         meta["rotation"] = exif_rotation
     return meta

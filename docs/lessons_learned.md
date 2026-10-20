@@ -79,6 +79,13 @@ system for thumbnails, detection, and render framing.
 **Protection:** pending EXIF 1–8 and HEIC fixtures and visual render comparisons (F07).
 The current suite passing does not establish this contract.
 
+**Evidence/protection added 2026-10-20 (A03):** metadata previously opened HEIC with
+Pillow before the frame decoder registered its codec. Shared initialization now
+registers HEIF before either path opens it. `test_heic_frame_order.py` creates a HEIC
+fixture in the parent but starts a clean child for scan → metadata → visuals; both
+`.heic` and uppercase `.HEIF` pass on Windows and Linux. A synthetic HEIC thumbnail
+was viewed. This fixes process initialization, not the remaining orientation contract.
+
 ## LL06 · Cache reuse depends on identity, provenance, and artifact existence
 
 **Observed:** replacing a source retained its old hash and analysis timestamp in a
@@ -214,3 +221,18 @@ completed save. Keep historical outputs independent of the current render attemp
 
 **Protection:** download initiation has an API regression test. Artifact versioning
 and broader UI persistence checks remain follow-ups.
+
+## LL13 · Quality rank does not establish chronology
+
+**Observed, 2026-10-20 (A04):** samples were sorted by sharpness and persisted as
+primary/secondary, then passed primary-first to a prompt claiming chronological order.
+
+**Rule:** preserve sampled source timestamps independently of thumbnail selection.
+Order temporal evidence by those timestamps and label estimates. Legacy quality
+roles cannot reconstruct time; use a single representative and disclose uncertainty.
+
+**Protection:** `test_heic_frame_order.py` makes the sharpest sample occur last,
+persists the frame rows, and captures actual provider inputs: thumbnail stays last,
+vision receives first/middle/last. It also verifies timestamp estimates and nullable
+legacy migration without deleting artifacts. Description contract v2 invalidates
+only tracked descriptions, preserving archived knowledge and reusable CV/embeddings.

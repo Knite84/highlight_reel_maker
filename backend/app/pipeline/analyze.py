@@ -29,10 +29,13 @@ NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%fZ','now')"
 
 async def _store_scene_visuals(conn: Any, scene_id: int, entry: dict) -> None:
     metrics = entry["metrics"]
+    samples = {sample["path"]: sample for sample in entry.get("frame_samples", [])}
+    primary = samples.get(entry["primary_rel"], {})
     await conn.execute("DELETE FROM scene_frames WHERE scene_id = ?", (scene_id,))
     await conn.execute(
         "INSERT INTO scene_frames(scene_id, role, path, blur, brightness, contrast, motion, "
-        "stability, dominant_colors) VALUES (?, 'primary', ?, ?, ?, ?, ?, ?, ?)",
+        "stability, dominant_colors, timestamp_sec, timestamp_source) "
+        "VALUES (?, 'primary', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             scene_id,
             entry["primary_rel"],
@@ -42,12 +45,16 @@ async def _store_scene_visuals(conn: Any, scene_id: int, entry: dict) -> None:
             metrics.get("motion"),
             metrics.get("stability"),
             json.dumps(metrics.get("dominant_colors", [])),
+            primary.get("timestamp_sec"),
+            primary.get("timestamp_source"),
         ),
     )
     for secondary_rel in entry["secondary_rels"]:
+        sample = samples.get(secondary_rel, {})
         await conn.execute(
-            "INSERT INTO scene_frames(scene_id, role, path) VALUES (?, 'secondary', ?)",
-            (scene_id, secondary_rel),
+            "INSERT INTO scene_frames(scene_id, role, path, timestamp_sec, timestamp_source) "
+            "VALUES (?, 'secondary', ?, ?, ?)",
+            (scene_id, secondary_rel, sample.get("timestamp_sec"), sample.get("timestamp_source")),
         )
     await conn.execute(
         "UPDATE scenes SET rep_frame_path = ? WHERE id = ?", (entry["thumb_rel"], scene_id)

@@ -21,6 +21,8 @@ Companion to [`status.md`](status.md) (current state) and [`implementation-plan.
 | Embeddings | SigLIP2 via transformers (CPU torch inside backend Docker) | Zero-shot tag vocabulary; vectors in `embeddings` table |
 | Face detection | OpenCV `FaceDetectorYN` (YuNet) | Stills only, render-time crop anchoring. ONNX (~230KB) auto-downloaded from OpenCV Zoo to `%LOCALAPPDATA%\ReelMaker\models\`; graceful fallback to upper-biased heuristic |
 | Media understanding | PySceneDetect, OpenCV frame metrics, pillow-heif, exiftool | Scenes → rep frames → Tier-0 CV → embeddings → VLM descriptions |
+| Image initialization | Shared `pipeline/images.py` | Lazy HEIF registration before metadata/decoding; metadata image I/O runs off the event loop |
+| Frame evidence | Nullable `scene_frames.timestamp_sec` / `timestamp_source` | Sharpest primary remains independent of chronological vision inputs. Decoder milliseconds or labeled index/FPS estimates; legacy unknown timestamps use one representative frame |
 | Rendering | FFmpeg/ffprobe | Filtergraph builder (`renderer/filtergraph.py`): xfade/acrossfade, Ken Burns `zoompan` from 4× upscaled stills, `tpad`/`apad`, loudnorm, BT.709 output. NVENC requires an actual encode probe, otherwise x264. Docker uses CPU zscale tone mapping (libplacebo corrupted real HDR output); native capability errors retry with zscale. NVENC still encodes. HDR appearance needs broader QA |
 | Duration policy | Planner fitter (`planner/generate.py`) | Frame-based grow/shrink, `_evenize_photo_spans`, freeze-tail fallback. Intended exact-duration behavior has request-authority and output-verification gaps (review F05/F09); output duration/streams/resolution are now probed before publication |
 | EXIF/orientation | exiftool + OpenCV + PIL `exif_transpose` + ffmpeg `transpose` | Stored per-file (`files.rotation`, degrees CW). Current decode/rotation paths can double-apply EXIF (review F07); normalized decoder contract pending |
@@ -139,6 +141,13 @@ not move files. Restore may supply a new display name when the old one is in use
   not implemented. Face detection only informs still-photo framing, not recognition.
 
 ## Verification and maintenance
+
+Latest scoped HEIC/ordering slice (2026-10-20): **115 fast tests passed on Windows
+and Linux**, one slow test deselected each; Ruff passed both, frontend build passed,
+backend image built. Fresh-process HEIC/HEIF and captured vision ordering were tested;
+a synthetic HEIC thumbnail was viewed. No new real-media/audio/browser/live-model QA.
+Description contract v2 selectively refreshes tracked v1 descriptions on Analyze;
+frame/embedding caches remain reusable. Orientation normalization remains pending.
 
 Latest source/cache slice (2026-10-20): **110 fast tests passed on Windows and Linux**,
 one slow test deselected each; Ruff passed both and frontend type/build passed.

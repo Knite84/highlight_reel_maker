@@ -1,7 +1,18 @@
 # Source revisions and reusable analysis
 
 Implemented 2026-10-20 for the source/cache portion of audit package 2 (F01/A05).
-Orientation, HEIC initialization and frame timestamp ordering remain F07/A03/A04 work.
+HEIC initialization and frame timestamp ordering were subsequently implemented as
+the scoped A03/A04 slice below. Broader orientation normalization remains F07 work.
+
+HEIF registration is shared by metadata and decoding. New frame samples retain
+timestamps and decoder/estimate provenance; thumbnail selection remains quality-based
+while vision inputs sort by time. Legacy samples with unknown timestamps use one
+representative frame for new descriptions and disclose unknown order. Existing frame
+rows/files are retained. Description contract `describe.v2-chronological` refreshes
+previously tracked v1 descriptions on the next Analyze, using the existing archived
+invalidation path; it does not force CV/embedding recomputation. Untracked legacy
+descriptions remain unverified. Live Unsloth is required for description refresh.
+Frame-index/FPS fallback is labeled estimated; frame-accurate VFR seeking is not claimed.
 
 ## What Analyze reuses
 

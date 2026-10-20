@@ -9,7 +9,7 @@ CONTRACTS = {
     "scenes": "scenes.v1",
     "visuals": "visuals.v1",
     "embeddings": "siglip-tags.v1",
-    "descriptions": "describe.v1",
+    "descriptions": "describe.v2-chronological",
 }
 
 

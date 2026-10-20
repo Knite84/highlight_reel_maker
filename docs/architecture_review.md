@@ -1,5 +1,9 @@
 # Architecture and product effectiveness review
 
+> Scoped follow-up 2026-10-20: HEIC initialization and frame evidence chronology
+> (A03/A04 in the remediation plan) are implemented. F07 orientation normalization
+> remains open. See [status.md](status.md) for current evidence and limitations.
+
 > Source/cache checkpoint 2026-10-20: F01/A05 now have source revisions, stage/model
 > contracts, selective artifact repair, history preservation and protected migration.
 > Legacy provenance remains unverified; F07/A03/A04 and full scene/plan identity are
