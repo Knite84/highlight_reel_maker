@@ -31,9 +31,8 @@ const { data: project } = useQuery({
   queryFn: () => api.get<ProjectDetail>(`/projects/${projectId}`),
 })
 
-const scanVersion = ref(0)
 const filesQuery = useQuery({
-  queryKey: ['files', projectId, scanVersion],
+  queryKey: ['files', projectId],
   queryFn: () => api.get<MediaFile[]>(`/projects/${projectId}/files`),
 })
 
@@ -449,9 +448,6 @@ const fileList = computed(() => filesQuery.data.value ?? [])
           {{ activePlanJob.error.slice(0, 250) }}
         </p>
       </div>
-      <p v-else-if="waitingForPlanner" class="muted">
-        Planning… your GPU is thinking.
-      </p>
     </div>
 
     <h2>Reels</h2>

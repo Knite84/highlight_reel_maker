@@ -94,7 +94,6 @@ class InputMaps:
     def __init__(self) -> None:
         self.video_of: dict[int, int] = {}
         self.audio_of: dict[int, int] = {}
-        self.image_inputs: set[int] = set()
         self.hdr_inputs: set[int] = set()
 
 
@@ -332,7 +331,6 @@ def build_render_args(
         source = sources[clip.rel_path]
         span = clip.end_sec - clip.start_sec
         if clip.rel_path in image_rels:
-            maps.image_inputs.add(next_input)
             args += ["-i", str(source)]
             maps.video_of[clip_index] = next_input
             next_input += 1

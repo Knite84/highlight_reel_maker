@@ -95,8 +95,7 @@ async def describe_pending_scenes(
 ) -> dict[str, int]:
     cur = await conn.execute(
         "SELECT s.id, s.start_sec, s.end_sec, "
-        "MAX(CASE WHEN sf.role='primary' THEN sf.path END) AS primary_path, "
-        "GROUP_CONCAT(CASE WHEN sf.role='secondary' THEN sf.path END) AS secondary_paths "
+        "MAX(CASE WHEN sf.role='primary' THEN sf.path END) AS primary_path "
         "FROM scenes s "
         "JOIN scene_frames sf ON sf.scene_id = s.id "
         "WHERE s.file_id = ? AND NOT EXISTS ("

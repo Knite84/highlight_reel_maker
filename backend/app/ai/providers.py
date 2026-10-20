@@ -35,9 +35,6 @@ def _looks_vision(model_id: str) -> bool:
     )
 
 
-_JSON_OBJECT_RE = re.compile(r"[{]", re.ASCII)
-
-
 def extract_json(text: str) -> dict[str, Any]:
     cleaned = text.strip()
     start = cleaned.find("{")

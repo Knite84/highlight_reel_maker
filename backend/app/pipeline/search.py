@@ -59,7 +59,7 @@ async def search_scenes(
             )
 
     results = []
-    for position, i in enumerate(order):
+    for i in order:
         row = rows[int(i)]
         results.append(
             {
@@ -74,12 +74,9 @@ async def search_scenes(
                     tags_by_scene.get(int(row["id"]), []),
                     key=lambda item: -item["score"],
                 ),
-                "_rank": int(position),
             }
         )
     results.sort(key=lambda item: -item["score"])
-    for result in results:
-        result.pop("_rank")
     return results
 
 

@@ -5,7 +5,15 @@ generates highlight reels from a text prompt. 100% local — your media and API
 keys never leave your machine. Windows-first.
 
 - Vision analysis, semantic scene search, LLM edit planning, FFmpeg rendering
-- Design doc: [`docs/implementation-plan.md`](docs/implementation-plan.md) · original spec: [`spec.txt`](spec.txt)
+- Face-aware photo framing (YuNet head detection keeps full heads in frame), EXIF-correct
+  orientation, uniform still pacing, frame-exact reel durations
+- Design doc: [`docs/implementation-plan.md`](docs/implementation-plan.md) · current state:
+  [`docs/status.md`](docs/status.md) · stack inventory: [`docs/tech_stack.md`](docs/tech_stack.md) ·
+  original spec: [`spec.txt`](spec.txt)
+
+Architecture review and suggested fixes: [`docs/architecture_review.md`](docs/architecture_review.md).
+Contributors: read and maintain [`docs/lessons_learned.md`](docs/lessons_learned.md)
+alongside the stack inventory; see [`AGENTS.md`](AGENTS.md).
 
 ## Stack
 
@@ -14,7 +22,7 @@ keys never leave your machine. Windows-first.
 | UI | Vue 3 + TypeScript + Vite + Pinia + TanStack Query |
 | Backend | Python + FastAPI + SQLite (per-project knowledge base) |
 | AI | Unsloth Desktop (any OpenAI-compatible server), Qwen3-VL for vision, SigLIP2 embeddings |
-| Media | FFmpeg/ffprobe (scenes, frames, rendering), exiftool (GPS/camera), PySceneDetect |
+| Media | FFmpeg/ffprobe (scenes, frames, rendering), exiftool (GPS/camera), PySceneDetect, OpenCV (YuNet faces, frame metrics) |
 
 ## Prerequisites (one-time)
 
@@ -38,10 +46,9 @@ npm install
 
 ### 2. Configure the AI connection (backend\.env)
 
-1. Open **Unsloth Desktop** → load a **vision** model into a slot
-   (e.g. any `Qwen3-VL-*-GGUF`). A model that is merely *downloaded* is not enough —
-   it must be **loaded/running** in a slot.
-2. In Unsloth: avatar → **Settings → API** → create a key (`sk-unsloth-…`).
+1. Open **Unsloth Desktop** → load a **vision** model
+   (e.g. `Qwen3-VL-8B-Instruct-abliterated-v2.0-GGUF:Q4_K_S`).
+2. In Unsloth: avatar → **Settings → API** → create a key (`sk-unsloth-…`). Remember the API key is often set to expire after n days when it's created in Unsloth Desktop.
 3. Copy `backend\.env.example` to `backend\.env` and fill it in:
 
 ```
@@ -74,11 +81,17 @@ Then open **<http://localhost:5173>** (backend API runs at `127.0.0.1:8000`).
 ### Making a reel
 
 1. **Projects** → name + absolute path to a media folder → Create (auto-scans)
-2. **Analyze** — scenes, frames, quality metrics, tags, AI descriptions
+2. **Analyze** — the single button always rescans the folder first (picks up new files, drops
+   deleted ones), then runs scenes, frames, quality metrics, tags, AI descriptions
    (~5–8s per scene on an RTX 4070 Super; resumable/idempotent, safe to re-run)
-3. **Scene search** — try "summit", "group laughing", "lake"
-4. **Generate reel** — describe it ("energetic summit montage"), set target seconds
-5. Expand the reel → **Preview plan** (instant, no render) → **Render (proxy)** → **Download MP4**
+3. **Generate reel** — describe it ("energetic summit montage"), set target seconds.
+   Still images are paced uniformly (target time ÷ image count); portrait photos are
+   auto-framed to keep whole heads in view
+4. The **Reels grid** lists every plan: Render → slim progress bar → **⬇ download icon**.
+   Reels stay bold (unread) until downloaded. Expand a row (▸) for the instant plan preview
+   player + clip list
+5. **Scene library** (collapsed accordion near the bottom) — semantic search + tag chips +
+   thumbnails, when you want to inspect what was indexed
 
 Re-planning is cheap (~10–30s); expensive analysis runs once and is cached forever.
 
@@ -88,6 +101,8 @@ Everything runtime-related is outside the repo:
 
 - Projects DBs, thumbnails, exports: `%LOCALAPPDATA%\ReelMaker\`
 - HF model cache (SigLIP2): `%LOCALAPPDATA%\ReelMaker\hf`
+- Face-detection model (YuNet ONNX, ~230KB, auto-downloaded on first render with photos):
+  `%LOCALAPPDATA%\ReelMaker\models`
 
 ## Troubleshooting
 
@@ -97,7 +112,9 @@ Everything runtime-related is outside the repo:
 | "model … downloaded but not loaded" | Load the model into a slot in Unsloth Desktop |
 | Planning returns JSON errors | Ensure a model is loaded; retry — output is auto-salvaged/truncated-repaired |
 | No GPS/camera metadata | Install exiftool, then re-run Analyze |
-| Analyze says "0 files" | Hit Analyze again — it now auto-scans first |
+| Analyze says "0 files" | Hit Analyze again — it always rescans the folder first |
+| **Python changes not taking effect** | The backend has no auto-reload — `scripts\stop-dev.ps1` then `start-dev.ps1`. Check the port-8000 process start time before debugging "broken" code |
+| Photo crops look wrong / faces clipped | Check `%LOCALAPPDATA%\ReelMaker\models` contains the YuNet ONNX (delete it to force re-download). Offline machines silently fall back to a simple upper-biased crop |
 
 ## Development
 

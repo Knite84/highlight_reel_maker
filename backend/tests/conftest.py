@@ -1,5 +1,3 @@
-import time
-
 import pytest
 
 
@@ -22,16 +20,6 @@ def client(env):
 
     with TestClient(create_app()) as test_client:
         yield test_client
-
-
-def wait_for_job(client, job_id: int, timeout: float = 20.0):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        job = client.get(f"/api/jobs/{job_id}").json()
-        if job["status"] in ("done", "failed", "cancelled"):
-            return job
-        time.sleep(0.05)
-    raise AssertionError(f"job {job_id} did not finish within {timeout}s")
 
 
 @pytest.fixture()

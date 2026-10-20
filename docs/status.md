@@ -1,10 +1,17 @@
 # Project Status — Handoff Notes
 
-*Last updated: 2025-08-24 session (2) · Read this first in a new context window*
+> 2026-10-20 review: see [`architecture_review.md`](architecture_review.md) for current
+> defects and priorities, and [`lessons_learned.md`](lessons_learned.md) for the living
+> maintenance record. The August verification below is historical; the review found
+> gaps in duration authority, EXIF handling, cache invalidation, and job recovery.
+
+*Last updated: 2026-08-25 session · Read this first in a new context window*
 
 Companion docs: [`implementation-plan.md`](implementation-plan.md) (original phased plan — treat
-phases 0–2 as DONE, phase list below supersedes it) · [`../README.md`](../README.md) (run/setup) ·
-[`../spec.txt`](../spec.txt) (original vision).
+phases 0–2 as DONE, phase list below supersedes it) · [`tech_stack.md`](tech_stack.md) (what runs
+where) · [`../README.md`](../README.md) (run/setup) ·
+[`../Notes_&_To_Dos.md`](../Notes_&_To_Dos.md) (lessons learned) · [`../spec.txt`](../spec.txt)
+(original vision).
 
 ## Where we are
 
@@ -120,7 +127,7 @@ We are effectively **mid-Phase 3** of the original plan. Docker was considered a
 
 ## Suggested next steps
 
-1. User live check on 14ers project: new page order + proxy render to eyeball face-anchored
-   crops (first render downloads the YuNet ONNX once; offline machines just get the heuristic)
+1. ~~User live check of new page order + face-anchored crops~~ **Confirmed working by user
+   (2026-08-25)**, including even still pacing after the `_evenize_photo_spans` pass
 2. Then resume Phase 3: video-frame faces/attributes, YAMNet audio tagging, manual editor,
    music library
