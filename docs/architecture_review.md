@@ -1,5 +1,10 @@
 # Architecture and product effectiveness review
 
+> Duration checkpoint 2026-10-20: F05 is implemented for newly generated plans.
+> Request duration is authoritative before validation/fitting; saved JSON/column and
+> fitted timing have regression coverage. F06/F09 and broader timing policy remain
+> open. [status.md](status.md) records current verification and remaining work.
+
 > Scoped follow-up 2026-10-20: HEIC initialization and frame evidence chronology
 > (A03/A04 in the remediation plan) are implemented. F07 orientation normalization
 > remains open. See [status.md](status.md) for current evidence and limitations.
@@ -137,7 +142,12 @@ Keep prior successful artifacts available when a new attempt fails.
 encode, and output verification. Every attempt reaches a terminal state, removes its
 temporary files, and preserves the previous successful export.
 
-### F05 · P1 · The model can override the user's requested duration
+### F05 · P1 · The model can override the user's requested duration — fixed 2026-10-20
+
+Implemented for new plans: request duration replaces the model value before validation
+and fitting. Six fake-provider cases verify saved targets and fitted timeline duration.
+Existing plans remain unchanged. The original defect evidence below is historical;
+chronology and duration-filling disclosures remain separate F09 work.
 
 **Evidence:** `planner/generate.py`, `generate_plan`, copies the user's prompt and seed
 back onto the model response but not `target_duration_sec`. `validate_and_fix_plan`

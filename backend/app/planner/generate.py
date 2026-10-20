@@ -517,9 +517,12 @@ async def generate_plan(
         max_tokens=6000,
     )
     try:
-        plan = EditPlan.model_validate(data)
+        # The request owns these fields. Apply them before validation/fitting so
+        # even a missing or malformed model duration cannot change the target.
+        plan = EditPlan.model_validate({
+            **data, "prompt": prompt, "seed": seed, "target_duration_sec": target_duration_sec,
+        })
     except Exception as exc:
         raise PlannerOutputError(f"plan failed validation: {exc}", raw=json.dumps(data)[:400]) from exc
-    plan = plan.model_copy(update={"prompt": prompt, "seed": seed})
     fixed = await validate_and_fix_plan(plan, refs, conn)
     return fixed, refs

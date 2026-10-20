@@ -24,7 +24,7 @@ Companion to [`status.md`](status.md) (current state) and [`implementation-plan.
 | Image initialization | Shared `pipeline/images.py` | Lazy HEIF registration before metadata/decoding; metadata image I/O runs off the event loop |
 | Frame evidence | Nullable `scene_frames.timestamp_sec` / `timestamp_source` | Sharpest primary remains independent of chronological vision inputs. Decoder milliseconds or labeled index/FPS estimates; legacy unknown timestamps use one representative frame |
 | Rendering | FFmpeg/ffprobe | Filtergraph builder (`renderer/filtergraph.py`): xfade/acrossfade, Ken Burns `zoompan` from 4× upscaled stills, `tpad`/`apad`, loudnorm, BT.709 output. NVENC requires an actual encode probe, otherwise x264. Docker uses CPU zscale tone mapping (libplacebo corrupted real HDR output); native capability errors retry with zscale. NVENC still encodes. HDR appearance needs broader QA |
-| Duration policy | Planner fitter (`planner/generate.py`) | Frame-based grow/shrink, `_evenize_photo_spans`, freeze-tail fallback. Intended exact-duration behavior has request-authority and output-verification gaps (review F05/F09); output duration/streams/resolution are now probed before publication |
+| Duration policy | Planner fitter (`planner/generate.py`) | Request duration overrides model output before validation/fitting (F05). Frame-based grow/shrink, `_evenize_photo_spans`, freeze-tail fallback remain; chronology, pacing disclosures and shared timing ownership are open (F09). Output duration/streams/resolution are probed before publication |
 | EXIF/orientation | exiftool + OpenCV + PIL `exif_transpose` + ffmpeg `transpose` | Stored per-file (`files.rotation`, degrees CW). Current decode/rotation paths can double-apply EXIF (review F07); normalized decoder contract pending |
 | Config | pydantic-settings, `REELMAKER_*` env + `backend\.env` | `data_root`, `projects_root`, Unsloth URL/key, planner model id |
 | Dev tooling | pytest (fast suite; `-m slow` = real-model E2E), ruff, vue-tsc | Backend has **no auto-reload** — restart via scripts after Python edits |
@@ -142,14 +142,20 @@ not move files. Restore may supply a new display name when the old one is in use
 
 ## Verification and maintenance
 
-Latest scoped HEIC/ordering slice (2026-10-20): **115 fast tests passed on Windows
+Latest duration-authority slice (2026-10-20): **121 fast tests passed on Windows and
+Linux**, one slow test deselected each; Ruff passed both; frontend build passed;
+backend image built. Six fake-provider cases verify request authority through the
+planning handler, fitting and SQLite persistence. No new real-media, audio, browser
+or live-model QA occurred. No runtime paths, providers, dependencies or schema changed.
+
+Earlier scoped HEIC/ordering slice (2026-10-20): **115 fast tests passed on Windows
 and Linux**, one slow test deselected each; Ruff passed both, frontend build passed,
 backend image built. Fresh-process HEIC/HEIF and captured vision ordering were tested;
 a synthetic HEIC thumbnail was viewed. No new real-media/audio/browser/live-model QA.
 Description contract v2 selectively refreshes tracked v1 descriptions on Analyze;
 frame/embedding caches remain reusable. Orientation normalization remains pending.
 
-Latest source/cache slice (2026-10-20): **110 fast tests passed on Windows and Linux**,
+Earlier source/cache slice (2026-10-20): **110 fast tests passed on Windows and Linux**,
 one slow test deselected each; Ruff passed both and frontend type/build passed.
 Both images built without recreating live services. Synthetic thumbnail visual QA
 occurred; no new real-media, live-model, audio or browser QA occurred in this slice.

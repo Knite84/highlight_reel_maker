@@ -1,7 +1,7 @@
 # Independent audit and proposed remediation plan
 
 Date: 2026-10-20. Reviewed checkout: `fc9938e` (`architectural review cleanup phase 1.`).
-Status: **package 1, Docker/lifecycle foundation and the source/cache portion of package 2 implemented; remaining work is proposed**.
+Status: **package 1, Docker/lifecycle foundation, source/cache and HEIC/frame-ordering slices of package 2, and F05 duration authority implemented; remaining work is proposed**.
 
 ## Accepted decisions and package 1 handoff (2026-10-20)
 
@@ -34,6 +34,13 @@ now uses CPU zscale with NVENC encoding. Three corrected frames were clean of bl
 but the more washed-out appearance needs broader HDR color acceptance. All other audit contracts remain in the backlog.
 
 ## Assessment
+
+Duration checkpoint 2026-10-20: F05 request authority is implemented before schema
+validation and fitting. Six provider-to-persistence regressions confirm a 45-second
+request remains authoritative against shorter/longer/invalid/omitted model targets.
+Existing plans are unchanged. F06/F09 and the rest of package 5 remain open; this
+does not implement narrative-order exceptions or pre-render pacing disclosure.
+See [status.md](status.md) for 121-test cross-platform verification and limitations.
 
 Scoped follow-up 2026-10-20: A03's HEIC initialization and A04's frame evidence
 ordering are implemented and verified with fresh subprocesses and captured provider
@@ -129,7 +136,7 @@ These are implementation priorities, not CVSS security scores.
 | F02 — incomplete inventory deletes knowledge | Implemented in package 1; missing-root, subtree, stat, late-root-loss, and cancellation regressions. | Complete for this slice |
 | F03 — restart recovery | Confirmed by startup/worker inspection: queued handlers are memory-only; old active rows remain. | P1, package 3 |
 | F04 — render lifecycle/output replacement | Confirmed by control flow. Preparation and missing-output failures bypass edit failure updates; `-y` overwrites an existing profile output. | P1, package 4 |
-| F05 — request duration authority | Confirmed by fake-provider probe. Persisted request and normalized plan can disagree. | P1, package 5 |
+| F05 — request duration authority | Implemented 2026-10-20: request duration applied before validation/fitting; saved JSON/column and fitted timing covered by six regressions. Existing plans are unchanged. | Done; remaining package 5 work stays open |
 | F06 — scene identity | Confirmed: first matching path supplies bounds although a video has several scene candidates. | P1, package 5 |
 | F07 — orientation | Reproduced for EXIF 6. Mirrored orientations are not represented by degree-only metadata. Video decoder behavior also needs verification. | P1, package 2 |
 | F08 — relevance omitted from shortlist | Confirmed: quality ranking chooses 60 before the brief reaches the planner. | P2, package 6 |

@@ -51,8 +51,14 @@ can override a 45-second request.
 apply a documented pacing policy, then verify final timing. Disclose filler/freezes.
 Shared timing mathematics should have one owner independent of rendering syntax.
 
-**Protection:** existing planner timing tests plus pending model-target mismatch,
-filler chronology, and actual-output checks (F05/F09). Existing tests do not cover all.
+**Evidence/protection added 2026-10-20 (F05):** request duration, prompt and seed now
+override model fields before schema validation and all fitting. Six fake-provider
+regressions run the real planning handler and persistence path: shorter, longer,
+zero, null, invalid and omitted model duration each retain the 45-second request.
+They verify the saved column/JSON agree and the fitted timeline is within one frame
+of the target. No real inference is required. Existing saved plans are unchanged.
+Filler chronology, pre-render pacing disclosures and shared timing ownership remain
+F09/package 5 work; this test does not establish visual/audio quality.
 
 ## LL04 · Detection cannot protect subjects it does not detect
 

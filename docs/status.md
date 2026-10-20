@@ -1,5 +1,33 @@
 # Project Status — Handoff Notes
 
+## 2026-10-20 — Request duration authority (F05) and documentation handoff
+
+New planning requests now apply the validated request's duration before model-plan
+validation and fitting. The model's shorter/longer/invalid/missing duration cannot
+replace it. Prompt/seed retain request ownership as before. Saved plans, source media,
+existing knowledge and exports are unchanged; no schema migration was added.
+
+Six regressions call the real planning handler with a fake provider and disposable
+SQLite store. A 45-second request remains 45 in both the edits column and plan JSON,
+and the fitted timeline agrees within one 30-fps frame. The tests include model
+targets 12, 90, zero, null, invalid text and an omitted target.
+
+Verification: **121 fast pytest tests passed on Windows and Linux**, one slow test
+deselected each; Ruff passed both; frontend type/build passed; backend image built.
+No real provider calls, new real-media visual/audio QA or interactive browser QA
+occurred. Known Starlette/httpx and npm environment warnings remain.
+
+README, stack inventory, lessons and both audit documents reflect this checkpoint.
+Running services were not recreated. Activate with `scripts/start-dev.ps1` or
+`docker compose up -d --build --wait`. Changes are ready for review/commit.
+
+Remaining work includes F07 orientation (EXIF/mirrored/video decoder verification),
+F06 scene identity, F09 chronology and pacing disclosures, UI job reconciliation,
+retrieval relevance, previews/final exports and remaining model/capability hardening.
+The user-approved default remains chronological unless the brief explicitly requests
+narrative order; duration-filling tradeoffs still need disclosure before rendering.
+Historical checkpoints below describe their own verification, not newer behavior.
+
 ## 2026-10-20 — Scoped HEIC initialization and frame ordering (A03/A04)
 
 - Shared lazy HEIF initialization runs before metadata opens HEIC/HEIF, including

@@ -156,6 +156,55 @@ def test_select_candidates_respects_limits(tmp_path):
     assert all({"scene_id", "rel_path", "score"} <= set(item) for item in picked)
 
 
+@pytest.mark.parametrize("model_target", [12, 90, 0, None, "invalid", "omitted"])
+def test_requested_duration_controls_fitting_and_persisted_plan(tmp_path, monkeypatch, model_target):
+    import json
+
+    from app.api import plans
+    from app.planner.generate import expected_plan_duration
+
+    class Provider:
+        async def resolve_model(self, *args, **kwargs):
+            return "fake-model"
+
+        async def chat_json(self, **kwargs):
+            response = {
+                "prompt": "model prompt", "seed": 999,
+                "target_duration_sec": model_target,
+                "clips": [{"rel_path": "v1.mp4", "start_sec": 40, "end_sec": 48}],
+            }
+            if model_target == "omitted":
+                response.pop("target_duration_sec")
+            return response
+
+    class Context:
+        async def progress(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(plans, "get_provider", Provider)
+
+    async def run():
+        db = tmp_path / "db.sqlite"
+        conn = await _seed_candidates_db(db)
+        await conn.close()
+        result = await plans.plan_job_handler(Context(), {
+            "db_path": str(db), "prompt": "requested brief",
+            "target_duration_sec": 45.0, "seed": 7,
+        })
+        conn = await connect(db)
+        try:
+            row = await (await conn.execute("SELECT * FROM edits WHERE id=?", (result["edit_id"],))).fetchone()
+            plan = EditPlan.model_validate(json.loads(row["plan_json"]))
+            assert row["target_duration_sec"] == plan.target_duration_sec == 45.0
+            assert row["prompt"] == plan.prompt == "requested brief"
+            assert plan.seed == 7
+            assert expected_plan_duration(plan.clips) == pytest.approx(45.0, abs=1 / 30)
+        finally:
+            await conn.close()
+
+    asyncio.run(run())
+
+
 def test_validate_and_fix_plan_drops_and_trims(tmp_path):
     from app.planner.candidates import select_candidates as _sel
     from app.planner.generate import CandidateRef, validate_and_fix_plan

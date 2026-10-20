@@ -84,6 +84,9 @@ Download still saves a browser copy. See [storage and recovery details](docs/doc
    HEIC initializes automatically. New vision frame inputs follow recorded timestamps;
    older frames without timestamps use one representative for new descriptions.
 3. **Generate plan** uses your prompt and requested duration; **Render** executes the plan.
+   Your duration overrides the model's suggested target before fitting. This applies
+   to newly generated plans; saved plans keep their existing timing. Chronology and
+   clearer disclosure of duration-filling tradeoffs remain audit follow-ups.
 4. Download the resulting MP4. The current UI requests the 720p proxy profile; final-export
    UI and preview correctness remain audit follow-ups.
 
