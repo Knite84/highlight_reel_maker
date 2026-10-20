@@ -1,0 +1,41 @@
+name: reelmaker
+services:
+  app:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    init: true
+    stop_grace_period: 45s
+    env_file:
+      - path: backend/.env
+        required: false
+    environment:
+      REELMAKER_CONTAINER_MODE: "true"
+      REELMAKER_DATA_ROOT: /data
+      REELMAKER_PROJECTS_ROOT: /projects
+      REELMAKER_UNSLOTH_BASE_URL: http://host.docker.internal:8888
+      HF_HOME: /data/hf
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video,graphics
+    gpus: all
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health',timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    # No backend host port. configure-docker.ps1 supplies explicit host bind mounts.
+  web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    init: true
+    ports:
+      - "127.0.0.1:${REELMAKER_PORT:-5173}:80"
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1/healthz]
+      interval: 10s
+      timeout: 3s
+      retries: 3

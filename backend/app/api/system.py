@@ -5,9 +5,12 @@ import time
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from ..core.config import Settings
+from ..core.paths import UnsharedPath, host_path, source_path
+from ..core.processes import run_process
+from ..renderer.encode import resolve_encoder
 from .deps import get_settings_dep
 
 router = APIRouter(prefix="/system", tags=["system"])
@@ -19,14 +22,9 @@ _TTL_SECONDS = 15.0
 
 async def _run_command(cmd: list[str]) -> str:
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        out, _ = await proc.communicate()
-        return out.decode(errors="replace")
-    except OSError:
+        result = await run_process(cmd, timeout=8)
+        return result.stdout
+    except (OSError, TimeoutError):
         return ""
 
 
@@ -42,7 +40,8 @@ async def _detect_nvenc() -> dict[str, Any]:
             if "_nvenc" in line and len(parts := line.split()) > 2
         }
     )
-    return {"ok": bool(encoders), "encoders": encoders}
+    selected, _ = await resolve_encoder("proxy")
+    return {"ok": selected == "h264_nvenc", "encoders": encoders, "selected": selected}
 
 
 async def _detect_gpu() -> dict[str, Any]:
@@ -71,7 +70,7 @@ async def _check_unsloth(settings: Settings) -> dict[str, Any]:
     base = base.removesuffix("/v1")
     url = f"{base}/v1/models"
     try:
-        async with httpx.AsyncClient(timeout=4.0) as client:
+        async with httpx.AsyncClient(timeout=4.0, trust_env=False) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
             data = response.json().get("data", [])
@@ -125,7 +124,9 @@ async def refresh(settings: Settings = Depends(get_settings_dep)) -> dict[str, A
 
 
 @router.post("/pick-folder")
-async def pick_folder() -> dict[str, Any]:
+async def pick_folder(settings: Settings = Depends(get_settings_dep)) -> dict[str, Any]:
+    if settings.container_mode:
+        return {"path": None, "browse": True}
     def _dialog() -> str | None:
         import tkinter as tk
         from tkinter import filedialog
@@ -147,11 +148,41 @@ async def pick_folder() -> dict[str, Any]:
     return {"path": path}
 
 
+@router.get("/folders")
+async def folders(path: str | None = None, settings: Settings = Depends(get_settings_dep)):
+    if not settings.container_mode:
+        raise HTTPException(status_code=400, detail="Use the Windows folder picker")
+    if path is None:
+        return {"path": None, "parent": None, "folders": [
+            {"name": host, "path": host} for host in settings.media_mounts
+        ]}
+    current = source_path(path, settings)
+    try:
+        children = []
+        for child in sorted(current.iterdir(), key=lambda p: p.name.lower()):
+            if child.is_dir():
+                try:
+                    source_path(child, settings)
+                except UnsharedPath:
+                    continue
+                children.append({"name": child.name, "path": host_path(child, settings)})
+        parent = None
+        try:
+            source_path(current.parent, settings)
+            parent = host_path(current.parent, settings)
+        except UnsharedPath:
+            pass
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"Cannot browse shared folder: {exc}") from exc
+    return {"path": host_path(current, settings), "parent": parent, "folders": children}
+
+
 @router.get("/config")
 async def config(settings: Settings = Depends(get_settings_dep)) -> dict[str, Any]:
     return {
-        "data_root": str(settings.data_root),
-        "projects_root": str(settings.projects_root),
+        "data_root": host_path(settings.data_root, settings),
+        "projects_root": host_path(settings.projects_root, settings),
+        "exports_root": host_path(settings.exports_root, settings) if settings.exports_root else None,
         "unsloth_base_url": settings.unsloth_base_url,
         "unsloth_api_key_set": bool(settings.unsloth_api_key),
         "planner_model_id": settings.planner_model_id,

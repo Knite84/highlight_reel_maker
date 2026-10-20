@@ -1,10 +1,10 @@
 import mimetypes
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
 from ..core import db as coredb
+from ..core.paths import source_path
 from .deps import get_registry, get_settings_dep, project_or_404
 
 router = APIRouter(prefix="/projects/{project_id}/media", tags=["media"])
@@ -19,7 +19,7 @@ async def media_file(
 ):
     project = await project_or_404(registry, project_id)
     db_path = coredb.project_db_path(settings.projects_root, project["slug"])
-    media_root = Path(project["media_path"]).resolve()
+    media_root = source_path(project["media_path"], settings)
 
     conn = await coredb.connect(db_path)
     try:

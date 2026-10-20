@@ -1,5 +1,11 @@
 # Architecture and product effectiveness review
 
+> Remediation update 2026-10-20: F02/F16, F03/F04 restart/render safety and
+> Docker are implemented. F20 uses Compose ownership/readiness. Subprocess portions
+> of A01/A02 and parts of F10/F14/F15/F17 are addressed. Docker HDR block artifacts were removed via CPU zscale tone mapping;
+> broader HDR color acceptance remains open. Findings below retain original evidence; [status.md](status.md) records
+> actual current behavior and verification.
+
 Reviewed: 2026-10-20. Scope: repository source, original `spec.txt`, setup scripts,
 documentation, backend tests, and frontend build. This is a code-based assessment;
 the current real-media collection and a live browser session were not exercised.

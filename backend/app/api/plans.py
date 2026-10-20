@@ -10,6 +10,7 @@ from ..ai.providers import ProviderError, get_provider
 from ..core import db as coredb
 from ..core import repos
 from ..core.config import Settings
+from ..core.paths import local_path, source_path
 from ..jobs.worker import JobRunner
 from ..planner.generate import generate_plan
 from ..renderer.encode import VALID_PROFILES
@@ -104,8 +105,9 @@ async def plan_job_handler(ctx, payload: dict) -> dict:
 async def _project_context(project_id: int, registry, settings: Settings):
     project = await project_or_404(registry, project_id)
     db_path = coredb.project_db_path(settings.projects_root, project["slug"])
-    media_root = Path(project["media_path"])
-    export_dir = settings.projects_root / project["slug"] / "exports"
+    media_root = source_path(project["media_path"], settings)
+    export_dir = (settings.exports_root / project["slug"] if settings.exports_root
+                  else settings.projects_root / project["slug"] / "exports")
     return db_path, media_root, export_dir
 
 
@@ -206,7 +208,7 @@ async def download_render(edit_id: int, project_id: int, registry=Depends(get_re
     finally:
         await conn.close()
     render_path = row.get("render_path")
-    if row["status"] != "rendered" or not render_path or not Path(render_path).is_file():
+    if not render_path or not local_path(render_path, settings).is_file():
         raise HTTPException(status_code=404, detail="Render not available yet")
     conn = await coredb.connect(db_path)
     try:
@@ -217,4 +219,4 @@ async def download_render(edit_id: int, project_id: int, registry=Depends(get_re
         await conn.commit()
     finally:
         await conn.close()
-    return FileResponse(Path(render_path), media_type="video/mp4", filename=f"reel_{edit_id}.mp4")
+    return FileResponse(local_path(render_path, settings), media_type="video/mp4", filename=f"reel_{edit_id}.mp4")

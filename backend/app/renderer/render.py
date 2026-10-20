@@ -1,36 +1,57 @@
 import asyncio
 import json
-import subprocess
+import logging
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
+from ..core.config import get_settings
 from ..core.db import connect, migrate_project
-from ..pipeline.metadata import probe_media_sync
+from ..core.paths import host_path, local_path
+from ..core.processes import run_process
+from ..pipeline.metadata import parse_probe_data
 from ..planner.schemas import EditPlan
 from .encode import canvas_for, resolve_encoder
 from .filtergraph import build_render_args
 from .photo_crop import compute_focus_points
 
-
-def _write_title_textfile(export_dir: Path, edit_id: int, plan: EditPlan) -> Path | None:
-    if plan.title is None:
-        return None
-    export_dir.mkdir(parents=True, exist_ok=True)
-    path = export_dir / f"edit_{edit_id}_title.txt"
-    lines = [plan.title.text]
-    if plan.title.subtitle:
-        lines.append(plan.title.subtitle)
-    path.write_text("\n".join(lines), encoding="utf-8")
-    return path
+logger = logging.getLogger(__name__)
 
 
-async def _mark_edit_failed(db_path: Path, edit_id: int, message: str) -> None:
+async def probe_media(path: Path) -> dict:
+    result = await run_process(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            str(path),
+        ],
+        timeout=60,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {result.stderr[-1000:]}")
+    return parse_probe_data(json.loads(result.stdout))
+
+
+async def mark_edit_failed(db_path: Path, edit_id: int, message: str) -> None:
     conn = await connect(db_path)
     try:
+        row = await (
+            await conn.execute("SELECT render_path FROM edits WHERE id=?", (edit_id,))
+        ).fetchone()
+        previous_exists = False
+        if row and row["render_path"]:
+            try:
+                previous_exists = local_path(row["render_path"]).is_file()
+            except ValueError:
+                pass
         await conn.execute(
-            "UPDATE edits SET status='failed', error=?, "
-            "rendered_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?",
-            (message[:500], edit_id),
+            "UPDATE edits SET status=?,error=? WHERE id=?",
+            ("rendered" if previous_exists else "failed", message[:1000], edit_id),
         )
         await conn.commit()
     finally:
@@ -38,179 +59,170 @@ async def _mark_edit_failed(db_path: Path, edit_id: int, message: str) -> None:
 
 
 async def render_job_handler(ctx: Any, payload: dict) -> dict:
-    db_path = Path(payload["db_path"])
-    media_root = Path(payload["media_root"])
-    export_dir = Path(payload["export_dir"])
+    db_path = local_path(payload["db_path"])
+    edit_id = int(payload["edit_id"])
+    temporary_files: list[Path] = []
+    try:
+        return await _render_attempt(ctx, payload, db_path, edit_id, temporary_files)
+    except BaseException as exc:
+        message = (
+            "Render interrupted/cancelled; retry when ready"
+            if isinstance(exc, asyncio.CancelledError)
+            else str(exc)
+        )
+        await mark_edit_failed(db_path, edit_id, message)
+        raise
+    finally:
+        for path in temporary_files:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Could not remove temporary render artifact %s", path)
+
+
+async def _render_attempt(ctx, payload, db_path, edit_id, temporary_files):
+    media_root = local_path(payload["media_root"]).resolve()
+    export_dir = local_path(payload["export_dir"])
     export_dir.mkdir(parents=True, exist_ok=True)
     profile = payload["profile"]
-    edit_id = int(payload["edit_id"])
-
+    attempt = uuid4().hex
+    output_path = export_dir / f"edit_{edit_id}_{profile}_{attempt}.mp4"
+    temporary_output = export_dir / f".{attempt}.partial.mp4"
+    temporary_files.append(temporary_output)
     conn = await connect(db_path)
     try:
         await migrate_project(conn)
-        cur = await conn.execute("SELECT plan_json FROM edits WHERE id = ?", (edit_id,))
-        row = await cur.fetchone()
+        row = await (
+            await conn.execute("SELECT plan_json FROM edits WHERE id=?", (edit_id,))
+        ).fetchone()
         if row is None:
             raise RuntimeError(f"edit {edit_id} not found")
-        cur = await conn.execute(
-            "SELECT rel_path, COALESCE(rotation, 0) AS rotation FROM files WHERE kind = 'photo'"
-        )
-        photo_rows = await cur.fetchall()
-        image_rels = frozenset(r["rel_path"] for r in photo_rows)
-        photo_rotations = {r["rel_path"]: int(r["rotation"]) for r in photo_rows}
-        await conn.execute(
-            "UPDATE edits SET status='rendering', error=NULL WHERE id = ?", (edit_id,)
-        )
+        await conn.execute("UPDATE edits SET status='rendering',error=NULL WHERE id=?", (edit_id,))
         await conn.commit()
         plan = EditPlan.model_validate(json.loads(row["plan_json"]))
+        photos = await (
+            await conn.execute(
+                "SELECT rel_path,COALESCE(rotation,0) AS rotation FROM files WHERE kind='photo'"
+            )
+        ).fetchall()
+        image_rels = frozenset(row["rel_path"] for row in photos)
+        rotations = {row["rel_path"]: int(row["rotation"]) for row in photos}
     finally:
         await conn.close()
 
-    missing = [
-        clip.rel_path for clip in plan.clips if not (media_root / clip.rel_path).is_file()
-    ]
-    if missing:
-        raise RuntimeError(f"source files missing: {sorted(set(missing))[:3]}")
-
-    sources: dict[str, Path] = {}
-    no_audio_rels: set[str] = set(image_rels)
-    hdr_rels: set[str] = set()
-    for rel_path in sorted({clip.rel_path for clip in plan.clips}):
-        source_path = media_root / rel_path
-        meta = await asyncio.to_thread(probe_media_sync, source_path)
-        if not meta.get("has_audio"):
-            no_audio_rels.add(rel_path)
-        if meta.get("is_hdr"):
-            hdr_rels.add(rel_path)
-        sources[rel_path] = source_path
-
-    photo_focus: dict[str, tuple[float, float]] = {}
-    plan_photo_rels = sorted({clip.rel_path for clip in plan.clips} & image_rels)
-    if plan_photo_rels:
-        photo_focus = await asyncio.to_thread(
-            compute_focus_points,
-            {rel: sources[rel] for rel in plan_photo_rels},
-            photo_rotations,
-        )
-
+    ctx.check_cancelled()
+    sources = {}
+    no_audio_rels = set(image_rels)
+    hdr_rels = set()
+    for rel in sorted({clip.rel_path for clip in plan.clips}):
+        source = (media_root / rel).resolve()
+        if not source.is_relative_to(media_root) or not source.is_file():
+            raise RuntimeError(f"Source missing or outside media folder: {rel}")
+        meta = await probe_media(source)
+        if not meta["has_audio"]:
+            no_audio_rels.add(rel)
+        if meta["is_hdr"]:
+            hdr_rels.add(rel)
+        sources[rel] = source
+        ctx.check_cancelled()
+    focus = {}
+    photo_sources = {rel: path for rel, path in sources.items() if rel in image_rels}
+    if photo_sources:
+        focus = await asyncio.to_thread(compute_focus_points, photo_sources, rotations)
+    ctx.check_cancelled()
     encoder, flags = await resolve_encoder(profile)
-    canvas_w, canvas_h = canvas_for(profile)
-    title_textfile_abs = _write_title_textfile(export_dir, edit_id, plan)
-    title_textfile = title_textfile_abs.name if title_textfile_abs else None
-    output_path = export_dir / f"edit_{edit_id}_{profile}.mp4"
-
-    engines = ["libplacebo", "zscale"] if hdr_rels else ["libplacebo"]
-    args: list[str] = []
+    width, height = canvas_for(profile)
+    title_file = None
+    if plan.title:
+        title_file = export_dir / f".{attempt}.title.txt"
+        temporary_files.append(title_file)
+        title_file.write_text(plan.title.text, encoding="utf-8")
     total_seconds = 0.0
-    stderr_probe = ""
+
+    async def progress(line):
+        if line.startswith("out_time_ms="):
+            try:
+                done = int(float(line.split("=", 1)[1]) / 1_000_000)
+            except ValueError:
+                return
+            await ctx.progress(done=min(done, int(total_seconds)), message=f"Rendering {done}s")
+
+    # Docker Vulkan/libplacebo produced silent block corruption on a real HDR
+    # source despite a successful exit. Use the portable CPU tone mapper there;
+    # NVENC still performs the final encode. Keep native capability fallback.
+    engines = (
+        ["libplacebo", "zscale"]
+        if hdr_rels and not get_settings().container_mode
+        else ["zscale"]
+    )
     for engine in engines:
         args, total_seconds = build_render_args(
             plan,
             sources,
-            canvas_w=canvas_w,
-            canvas_h=canvas_h,
+            canvas_w=width,
+            canvas_h=height,
             encoder=encoder,
             encoder_flags=flags,
-            output_path=output_path,
-            title_textfile=title_textfile,
+            output_path=temporary_output,
+            title_textfile=Path(title_file.name) if title_file else None,
             image_rels=image_rels,
             no_audio_rels=no_audio_rels,
             hdr_rels=hdr_rels,
             hdr_engine=engine,
-            photo_rotations=photo_rotations,
-            photo_focus=photo_focus,
+            photo_rotations=rotations,
+            photo_focus=focus,
         )
-        probe = await asyncio.to_thread(
-            subprocess.run,
-            [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                *args[1 : args.index("-y")],
-                "-f",
-                "lavfi",
-                "-i",
-                "color=black:s=64x64:d=0.1",
-                "-frames:v",
-                "1",
-                "-f",
-                "null",
-                "-",
-            ],
-            capture_output=True,
-            text=True,
+        await ctx.progress(
+            done=0, total=max(int(total_seconds), 1), message="Rendering", force=True
         )
-        if probe.returncode == 0:
+        result = await run_process(args, cwd=export_dir, timeout=1800, on_line=progress)
+        if result.returncode == 0:
             break
-        stderr_probe = probe.stderr[:300]
-    else:
-        raise RuntimeError(
-            f"no working HDR engine; libplacebo error: {stderr_probe}"
+        capability_error = any(
+            term in result.stderr.lower()
+            for term in (
+                "vulkan",
+                "libplacebo",
+                "device creation",
+                "no such filter",
+                "not implemented",
+            )
         )
+        if engine == "libplacebo" and hdr_rels and capability_error:
+            logger.warning("HDR libplacebo unavailable; retrying zscale: %s", result.stderr[-1000:])
+            continue
+        raise RuntimeError(f"ffmpeg failed ({result.returncode}): {result.stderr[-2000:]}")
+    else:
+        raise RuntimeError("No usable HDR rendering path")
 
-    await ctx.progress(done=0, total=max(int(total_seconds), 1), message="Rendering", force=True)
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=str(export_dir),
-    )
-
-    async def _pump_progress() -> None:
-        assert proc.stdout is not None
-        async for raw_line in proc.stdout:
-            line = raw_line.decode(errors="replace").strip()
-            if line.startswith("out_time_ms="):
-                try:
-                    micros = float(line.split("=", 1)[1])
-                except ValueError:
-                    continue
-                done = int(micros / 1_000_000)
-                await ctx.progress(done=done, message=f"Rendering {done}s/{int(total_seconds)}s")
-
-    stderr_tail = ""
-    progress_task = asyncio.create_task(_pump_progress())
-    try:
-        try:
-            return_code = await asyncio.wait_for(proc.wait(), timeout=1800.0)
-        except TimeoutError:
-            proc.kill()
-            return_code = await proc.wait()
-            raise RuntimeError("ffmpeg timed out after 30 minutes")
-        await progress_task
-        if proc.stderr is not None:
-            raw_stderr = await proc.stderr.read()
-            stderr_tail = raw_stderr.decode(errors="replace")[-600:]
-        if return_code != 0:
-            raise RuntimeError(f"ffmpeg failed ({return_code}): {stderr_tail}")
-    except asyncio.CancelledError:
-        proc.kill()
-        await _mark_edit_failed(db_path, edit_id, "render cancelled")
-        raise
-    except Exception as exc:
-        await _mark_edit_failed(db_path, edit_id, str(exc))
-        raise
-
-    if not output_path.is_file():
-        raise RuntimeError(f"render produced no output; ffmpeg said: {stderr_tail}")
-
+    ctx.check_cancelled()
+    if not temporary_output.is_file() or temporary_output.stat().st_size == 0:
+        raise RuntimeError("Render produced no nonempty output")
+    measured = await probe_media(temporary_output)
+    duration = measured["duration_sec"]
+    if duration is None or abs(duration - total_seconds) > 0.15:
+        raise RuntimeError(
+            f"Output duration verification failed: expected {total_seconds}s, got {duration}s"
+        )
+    if measured["width"] != width or measured["height"] != height or not measured["has_audio"]:
+        raise RuntimeError("Output stream/resolution verification failed")
+    ctx.check_cancelled()
+    # Each attempt gets a fresh final name: an interrupted replacement never truncates the last MP4.
+    temporary_output.replace(output_path)
     conn = await connect(db_path)
     try:
         await conn.execute(
-            "UPDATE edits SET status='rendered', render_path=?, error=NULL, "
-            "rendered_duration_sec=?, "
-            "rendered_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?",
-            (str(output_path), round(total_seconds, 3), edit_id),
+            "UPDATE edits SET status='rendered',render_path=?,error=NULL,rendered_duration_sec=?,"
+            "downloaded_at=NULL,rendered_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?",
+            (host_path(output_path, get_settings()), duration, edit_id),
         )
         await conn.commit()
     finally:
         await conn.close()
-
     return {
         "edit_id": edit_id,
         "output": str(output_path),
-        "duration_sec": total_seconds,
+        "duration_sec": duration,
         "encoder": encoder,
         "profile": profile,
     }

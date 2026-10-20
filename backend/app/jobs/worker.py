@@ -21,6 +21,16 @@ class JobCancelled(Exception):
     pass
 
 
+class ProjectUnavailable(Exception):
+    pass
+
+
+class JobFailedWithResult(RuntimeError):
+    def __init__(self, message: str, result: dict) -> None:
+        super().__init__(message)
+        self.result = result
+
+
 @dataclass
 class _Pending:
     handler: Handler
@@ -88,17 +98,26 @@ class JobRunner:
         self._contexts: dict[int, JobContext] = {}
         self._task: asyncio.Task | None = None
         self._current: int | None = None
+        # Serialize submission with archive/restore/purge within this single-worker app.
+        self.project_mutation_lock = asyncio.Lock()
+        self._handler_task: asyncio.Task | None = None
+        self._accepting = True
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._loop(), name="job-runner")
 
     async def stop(self) -> None:
+        self._accepting = False
         if self._task is not None:
             self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        while not self._queue.empty():
+            job_id = self._queue.get_nowait()
+            self._pending.pop(job_id, None)
+            await self._finish(job_id, status="cancelled", error="Application stopped before job started")
 
     async def enqueue(
         self,
@@ -108,6 +127,21 @@ class JobRunner:
         handler: Handler,
         payload: dict[str, Any] | None = None,
         on_done: OnDone | None = None,
+    ) -> int:
+        async with self.project_mutation_lock:
+            if not self._accepting:
+                raise ProjectUnavailable("Application is shutting down; retry after restart")
+            if project_id is not None and await repos.get_project(self._registry, project_id) is None:
+                raise ProjectUnavailable("Project was archived or removed; refresh the project list")
+            return await self._enqueue(project_id, kind, handler, payload, on_done)
+
+    async def _enqueue(
+        self,
+        project_id: int | None,
+        kind: str,
+        handler: Handler,
+        payload: dict[str, Any] | None,
+        on_done: OnDone | None,
     ) -> int:
         job_id = await repos.insert_job(
             self._registry,
@@ -127,6 +161,8 @@ class JobRunner:
             pending.cancelled = True
         if context is not None:
             context.request_cancel()
+            if self._handler_task is not None:
+                self._handler_task.cancel()
         return pending is not None or context is not None
 
     async def wait_until_idle(self, timeout: float = 120.0) -> None:
@@ -150,29 +186,30 @@ class JobRunner:
                 if pending.cancelled:
                     await self._finish(job_id, status="cancelled")
                     continue
-                await self.patch(job_id, status="running", started_at=repos.utc_now())
                 context = JobContext(self, job_id)
                 self._contexts[job_id] = context
                 try:
-                    result = await pending.handler(context, pending.payload)
-                    if context.cancelled():
-                        await self._finish(job_id, status="cancelled")
-                        continue
-                    await self._finish(job_id, status="done", result_json=json.dumps(result or {}))
+                    await self.patch(job_id, status="running", started_at=repos.utc_now())
+                    context.check_cancelled()
+                    self._handler_task = asyncio.create_task(pending.handler(context, pending.payload))
+                    result = await self._handler_task
                     if pending.on_done is not None and result is not None:
-                        try:
-                            await pending.on_done(result)
-                        except Exception:
-                            logger.exception("on_done callback failed for job %s", job_id)
+                        await pending.on_done(result)
+                    await self._finish(job_id, status="done", result_json=json.dumps(result or {}))
                 except JobCancelled:
                     await self._finish(job_id, status="cancelled")
                 except asyncio.CancelledError:
-                    await self._finish(job_id, status="cancelled")
-                    raise
+                    await self._finish(job_id, status="cancelled", error="Operation interrupted/cancelled")
+                    if not self._accepting:
+                        raise
                 except Exception as exc:
                     logger.exception("job %s failed", job_id)
-                    await self._finish(job_id, status="failed", error=str(exc))
+                    await self._finish(
+                        job_id, status="failed", error=str(exc),
+                        result_json=json.dumps(exc.result) if isinstance(exc, JobFailedWithResult) else None,
+                    )
                 finally:
+                    self._handler_task = None
                     self._contexts.pop(job_id, None)
             finally:
                 self._current = None

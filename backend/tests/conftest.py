@@ -5,6 +5,9 @@ import pytest
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("REELMAKER_DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setenv("REELMAKER_PROJECTS_ROOT", str(tmp_path / "projects"))
+    monkeypatch.setenv("REELMAKER_CONTAINER_MODE", "false")
+    monkeypatch.setenv("REELMAKER_PATH_MAPPINGS", "{}")
+    monkeypatch.setenv("REELMAKER_MEDIA_MOUNTS", "{}")
     from app.core.config import get_settings
 
     get_settings.cache_clear()

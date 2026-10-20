@@ -38,7 +38,7 @@ async def search_scenes(
 
     vectors = np.stack([blob_to_vector(row["vector"]) for row in rows])
     if query:
-        embedder = Embedder.get()
+        embedder = await asyncio.to_thread(Embedder.get)
         query_vector = (await asyncio.to_thread(embedder.encode_texts, [query]))[0]
         scores = vectors @ query_vector
     else:

@@ -21,7 +21,13 @@ The development launcher does not enable backend auto-reload.
 **Rule:** restart after Python changes and verify process ownership/start time before
 concluding a change failed. A future launcher should report readiness and build identity.
 
-**Protection:** stop/start and health checks; automation is still a follow-up (F20).
+**Evidence/protection, 2026-10-20:** the interim PID manifest was absent despite
+live native servers, so Stop correctly refused to infer ownership from their ports.
+Compose now owns the app group; Start builds and waits for health. The native
+servers were identified before cutover. `scripts/test-docker-scripts.ps1` checks
+wrapper arguments and working-directory preservation. Actual Stop released 5173
+(verified by socket bind), then Start restored health. Rebuild after source edits;
+Docker has no source auto-reload. Do not kill unrelated listeners by port number.
 
 ## LL02 · Graceful degradation must be visible
 
@@ -82,8 +88,15 @@ The current suite passing does not establish this contract.
 dependent work, transactionally. Verify referenced files still exist. Failed inventory
 is not evidence of source deletion.
 
-**Protection:** pending unchanged/changed-source, partial-walk, missing-artifact, and
-model-version regressions (F01/F02). Preserve expensive knowledge during recovery.
+**Evidence added 2026-10-20:** a missing-root probe removed indexed files and their
+dependent knowledge. Scanning now rejects missing/changed roots, directory traversal
+errors, and media stat failures; cancellation is checked before reconciliation.
+
+**Protection:** `test_scan.py` verifies full file/scene/embedding/description preservation
+on incomplete inventories, late root loss, and cancellation, plus intentional deletion
+on a successful scan. API coverage verifies failed Analyze retains counts and reports
+the inventory error. Changed-source, missing-artifact, and model-version regressions
+remain pending (F01). A successful inventory is not proof of cache freshness.
 
 ## LL07 · A job and its domain artifact need one lifecycle
 
@@ -94,8 +107,13 @@ jobs have no startup reconciliation; cooperative cancel can disagree with edit s
 failure, interruption, and cancellation behavior. Reconcile after restart. Preserve
 the last good artifact until a replacement is validated.
 
-**Protection:** pending failure injection and restart/cancellation matrix (F03/F04/F15).
-No distributed queue is required to establish these guarantees for a local app.
+**Evidence/protection, 2026-10-20:** `test_runtime_safety.py` covers preparation,
+encode, validation and publication failures, bounded output, timeout/cancel reaping,
+worker survival and persisted recovery. The isolated Docker smoke test verified
+graceful stop and forced-crash recovery while preserving a prior MP4. Outputs use
+unique filenames and probe validation before publication. Analysis threads are not
+hard-cancellable mid-computation; startup terminalizes interrupted work without replay.
+Broader frontend reconciliation remains open (F11/F15).
 
 ## LL08 · Realtime events complement durable state
 
@@ -116,8 +134,14 @@ matching file path. Deleted project slugs can also be reused with retained datab
 **Rule:** use immutable project storage IDs, source revisions, and scene IDs. A display
 name or file path alone is insufficient when several entities share it over time.
 
-**Protection:** pending multiple-scenes-per-file and delete/recreate regressions
-(F06/F16). Account for persisted plan compatibility when changing schemas.
+**Evidence added 2026-10-20:** new projects receive UUID-suffixed storage slugs;
+legacy paths remain intact. Removal retains a durable archive record and recovery
+restores the original ID/path. Purge is separately described and refuses source overlap.
+
+**Protection:** `test_project_lifecycle.py` covers archive/recreate/renamed restore,
+restart recovery, legacy orphan-directory preservation, active work, stale submission,
+and failed/unsafe purge. Scene-identity regressions remain pending (F06). Preserve
+persisted plan compatibility when changing schemas.
 
 ## LL10 · Measure usefulness before adding inference or abstractions
 
@@ -143,6 +167,21 @@ xfade. Keep explicit video/audio concat chains. Stills use a single source frame
 
 **Protection:** `tests/test_render.py` exercises graph generation and FFmpeg smoke
 renders. Validate real photos/audio/HDR after changing graph policy.
+
+**Evidence added 2026-10-20:** a string title path broke the graph's Path contract;
+title rendering now has a real handler regression, with separate subtitle and progress
+draining. NVENC capability must be an actual encode at a supported resolution: a
+128x72 probe falsely rejected this GPU, while 320x240 succeeded. Docker smoke and
+the real 35-second export used NVENC. Three inspected output frames exposed blocks
+in the closing HDR clip absent from a source sample; successful encoding and duration
+validation do not establish visual correctness. Comparing the previous export
+confirmed a Docker regression. Container rendering now uses CPU zscale tone mapping
+while NVENC encodes; rerendered frames at 25/29/33s were clean of blocks. The more
+washed-out appearance still needs broader HDR color QA.
+
+Docker builds from Windows also inherited executable flags on Python files; Linux
+Ruff caught EXE002 failures missed on Windows. The image now normalizes source/test/
+tool file modes and passes Linux Ruff; keep cross-platform checks for deployment changes.
 
 ## LL12 · Put state in the store that matches its scope
 

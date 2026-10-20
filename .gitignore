@@ -34,3 +34,8 @@ logs/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Machine-specific Docker bindings and disposable verification artifacts.
+/compose.override.yaml
+/.docker-backups/
+/.docker-smoke/

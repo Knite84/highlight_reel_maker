@@ -1,0 +1,15 @@
+.git
+**/node_modules
+**/.venv
+**/dist
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/.env
+**/.env.*
+compose.override.yaml
+.docker-backups
+.docker-smoke
+**/*.mp4
+**/*.sqlite*
+**/*.log

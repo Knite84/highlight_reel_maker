@@ -1,5 +1,99 @@
 # Project Status — Handoff Notes
 
+## 2026-10-20 — Docker and lifecycle foundation
+
+This supersedes the native-launcher and pending restart-recovery notes below.
+The user approved Docker and lifecycle safety before continuing the other audit work.
+SigLIP runs with the backend; Unsloth stays manually managed on Windows.
+
+- Compose group `reelmaker` is healthy at http://localhost:5173. Nginx serves the
+  frontend and proxies the backend; only loopback 5173 is published. Verified native
+  services were stopped without touching Unsloth. Start can be rerun safely and waits
+  for health. A real Stop from the scripts directory released 5173 (socket bind
+  verified); Start then rebuilt and restored health.
+- Persistent data, models, caches and exports use Windows bind mounts; source media
+  is read-only. Paths/IDs remain unchanged. See [docker.md](docker.md) for shared
+  folders, optional export destinations, backup/restore and Docker Desktop operation.
+  Browser downloads still follow browser settings. No custom export root was forced.
+- Integrity-checked final database backups are in ignored
+  `.docker-backups/20261020T142500087060Z`. Record comparisons preserved files (71),
+  scenes (71), frames (101), tags (213), embeddings (71), descriptions (71).
+  No source media was moved or reanalyzed.
+- F03/F04 and subprocess portions of A01/A02: startup reconciles interrupted jobs
+  and rendering edits; shutdown/cancel kill and reap encoder processes; subprocess
+  output is bounded. Preparation, encode, probe and publication share cleanup.
+  Validated unique outputs preserve prior exports; streams/resolution/duration are
+  checked before success. Hard cancellation of analysis threads remains limited.
+- Local provider URL restrictions, actual NVENC capability checks/x264 fallback,
+  portable container HDR tone mapping, native capability fallback, and failed analysis summaries with retained
+  partial results improve parts of F10/F14/F15/F17, without closing their full scope.
+
+Verification: **90 fast pytest tests passed on Windows and Linux**, one slow test
+excluded each; Ruff passed both; frontend build/type checking and PowerShell wrapper
+checks passed. Isolated Compose tests passed synthetic/title NVENC rendering,
+read-only sources, host exports/range download, unavailable provider behavior,
+graceful Stop/restart and SIGKILL/restart while retaining the previous MP4.
+Ignored `.docker-smoke/` contains reports. SigLIP loaded the existing host cache
+offline and produced a 768-dimensional vector; nonfatal token-ID warnings remain.
+
+Real-media QA: cached project 2/edit 14 rendered with NVENC, measured **35.0 seconds**,
+and passed range download while preserving its prior MP4. Initial frame inspection found block artifacts in the Docker libplacebo path, absent
+from both the source and previous export. Container rendering now uses CPU zscale
+tone mapping with NVENC encoding. Job 49 rerendered 35.0 seconds; frames at 25/29/33s
+were clean of those blocks. Its more washed-out tone mapping remains a quality
+limitation; broad HDR color/visual acceptance is still pending. Earlier exports remain.
+Audio was not listened to and no interactive browser QA occurred. Unsloth was
+unreachable both natively and through Docker; live-model generation and the slow
+suite were not run. Start/load Unsloth manually before Analyze/Generate.
+
+Next: resume source/stage invalidation and
+decoder contracts (F01/F07). Duration authority, chronology, scene identity, retrieval,
+UI job reconciliation and preview findings remain open.
+
+## 2026-10-20 — Remediation package 1 (historical)
+
+Approved decisions and the current backlog are in
+[`audit-remediation-plan-2026-10-20.md`](audit-remediation-plan-2026-10-20.md).
+Chronological order is the default unless the brief explicitly asks for narrative
+order; requested duration is authoritative with tradeoffs disclosed before rendering;
+inference is local only; foundation work comes before further feature selection.
+Planner/provider enforcement belongs to later packages.
+
+Implemented F02/F16 and the process-ownership portion of F20:
+
+- Incomplete inventories (missing root, traversal/stat errors, changed/disappeared
+  root) fail with a retry message and preserve indexed descendants. Cancellation is
+  checked before deletion reconciliation; complete scans still reconcile real deletion.
+- Default project removal archives metadata, knowledge, plans, exports, and history.
+  Archived projects can be restored, optionally under another display name. Restore
+  keeps the original project ID/storage path and works with offline source media.
+- New projects use UUID-suffixed storage slugs. Existing paths and pre-existing
+  orphan directories remain intact; a same-name project cannot inherit those caches.
+- Queued/running jobs block archive/purge. Submission and project lifecycle mutations
+  share a lock in the single application runner; stale submissions are rejected.
+- Explicit purge checks containment and registered source overlap, deletes storage
+  and job history, and preserves its archive record if file removal fails. A partial
+  purge may have removed some files; missing knowledge databases cannot be restored.
+- Start records per-checkout process identity; Stop verifies PID, creation time,
+  executable and command line. Unrecorded services/port owners are left untouched;
+  startup readiness remains follow-up work.
+
+Verification: `cd backend; uv run pytest` passed **71 tests**, with **1 slow test
+deselected** and no skipped fast tests; `uv run ruff check .` passed. `cd frontend;
+npm run build` passed. `powershell -NoProfile -ExecutionPolicy Bypass -File
+scripts/test-dev-processes.ps1` passed mocked ownership and syntax checks. The
+ownership reader was also verified against the command's own real PowerShell
+process without terminating it. No real-model, live-browser, or real-media visual/audio QA
+was performed; no existing runtime database or source collection was migrated/scanned.
+Known Starlette/httpx and npm `msvs-version` warnings remain. Restart the backend to
+load these source changes; this task did not restart the user's running services.
+
+Next package: source revisions, stage invalidation, decoder contracts, and selective
+artifact repair (F01/F07 and related findings). Job restart recovery (F03) is still open;
+persisted active jobs must become terminal before archive can proceed.
+
+## Earlier handoff context
+
 > 2026-10-20 review: see [`architecture_review.md`](architecture_review.md) for current
 > defects and priorities, and [`lessons_learned.md`](lessons_learned.md) for the living
 > maintenance record. The August verification below is historical; the review found

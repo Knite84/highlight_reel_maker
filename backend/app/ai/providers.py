@@ -84,7 +84,7 @@ class LLMProvider:
             if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"
             self._client = httpx.AsyncClient(
-                base_url=self.base_url, headers=headers, timeout=self._timeout
+                base_url=self.base_url, headers=headers, timeout=self._timeout, trust_env=False
             )
         return self._client
 

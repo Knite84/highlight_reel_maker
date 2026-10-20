@@ -22,6 +22,10 @@ export interface MediaFile {
   scene_count?: number
 }
 
+export interface ArchivedProject extends Project {
+  archived_at: string
+}
+
 export interface SceneResult {
   scene_id: number
   rel_path: string
@@ -106,6 +110,7 @@ export interface SystemStatus {
 export interface AppConfig {
   data_root: string
   projects_root: string
+  exports_root?: string | null
   unsloth_base_url: string
   unsloth_api_key_set: boolean
   planner_model_id: string

@@ -32,6 +32,12 @@ CREATE TABLE IF NOT EXISTS jobs (
     finished_at TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_jobs_project ON jobs(project_id, id DESC);
+CREATE TABLE IF NOT EXISTS archived_projects (
+    id INTEGER PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE,
+    project_json TEXT NOT NULL,
+    archived_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 """
 
 PROJECT_SCHEMA = """

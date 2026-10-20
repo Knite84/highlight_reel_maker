@@ -14,15 +14,15 @@ Companion to [`status.md`](status.md) (current state) and [`implementation-plan.
 | UI | Vue 3 + TypeScript + Vite + Pinia + TanStack Query | No component library — hand-rolled cards/grids. Vite `strictPort: true` on 5173 |
 | UI views | `ProjectsView`, `ProjectView`, `SettingsView` | ProjectView is the main surface: Analyze → Generate → Reels grid → collapsed Scene library / Media files accordions |
 | Realtime | SSE (`/api/jobs/stream`) → Pinia jobs store | 3s polling follows locally started jobs; plan list polls at 4s while rows are rendering. SSE has no snapshot/replay; recovery remains incomplete |
-| Backend | Python >=3.12 + FastAPI + uvicorn | Bare-metal (Dropped Docker). Review tests ran on Python 3.13.6. Run via `scripts/start-dev.ps1` |
+| Backend | Python >=3.12 + FastAPI + uvicorn | Docker Linux Python 3.13.16; native checks on 3.13.6. Start via `scripts/start-dev.ps1` |
 | DB | SQLite via aiosqlite | Registry (`%LOCALAPPDATA%\ReelMaker\registry.db`) + per-project `cache/db.sqlite`. Migrations via `CREATE TABLE IF NOT EXISTS` + `_ensure_column` |
-| Jobs | asyncio queue (`app/jobs/worker.py`) | One global worker; callable handlers and queue are in memory, job rows in registry SQLite. No restart recovery. 30-min timeout covers the main encode wait |
-| LLM/VLM | Unsloth Desktop (OpenAI-compatible), Qwen3-VL GGUF | Planner + scene descriptions. `/v1/models` lists *downloaded* ≠ *loaded* |
-| Embeddings | SigLIP2 via transformers (CPU torch) | Zero-shot tag vocabulary; vectors in `embeddings` table |
+| Jobs | asyncio queue (`app/jobs/worker.py`) | One global worker; callable handlers and queue are in memory, job rows in registry SQLite. Startup reconciles interrupted jobs/edits; shutdown cancels work. Encoder timeout, bounded output, kill/reap cleanup |
+| LLM/VLM | Unsloth Desktop (OpenAI-compatible), Qwen3-VL GGUF | External Windows server; planner + scene descriptions. `/v1/models` lists *downloaded* ≠ *loaded* |
+| Embeddings | SigLIP2 via transformers (CPU torch inside backend Docker) | Zero-shot tag vocabulary; vectors in `embeddings` table |
 | Face detection | OpenCV `FaceDetectorYN` (YuNet) | Stills only, render-time crop anchoring. ONNX (~230KB) auto-downloaded from OpenCV Zoo to `%LOCALAPPDATA%\ReelMaker\models\`; graceful fallback to upper-biased heuristic |
 | Media understanding | PySceneDetect, OpenCV frame metrics, pillow-heif, exiftool | Scenes → rep frames → Tier-0 CV → embeddings → VLM descriptions |
-| Rendering | FFmpeg/ffprobe | Filtergraph builder (`renderer/filtergraph.py`): xfade/acrossfade, Ken Burns `zoompan` from 4× upscaled stills, `tpad`/`apad`, loudnorm, BT.709 output. NVENC selection uses encoder listing, with x264 chosen when NVENC is absent; runtime failure retry is not implemented. HDR has libplacebo/zscale preparation attempts with incomplete probing |
-| Duration policy | Planner fitter (`planner/generate.py`) | Frame-based grow/shrink, `_evenize_photo_spans`, freeze-tail fallback. Intended exact-duration behavior has request-authority and output-verification gaps (review F05/F09); stored rendered duration is calculated, not probed |
+| Rendering | FFmpeg/ffprobe | Filtergraph builder (`renderer/filtergraph.py`): xfade/acrossfade, Ken Burns `zoompan` from 4× upscaled stills, `tpad`/`apad`, loudnorm, BT.709 output. NVENC requires an actual encode probe, otherwise x264. Docker uses CPU zscale tone mapping (libplacebo corrupted real HDR output); native capability errors retry with zscale. NVENC still encodes. HDR appearance needs broader QA |
+| Duration policy | Planner fitter (`planner/generate.py`) | Frame-based grow/shrink, `_evenize_photo_spans`, freeze-tail fallback. Intended exact-duration behavior has request-authority and output-verification gaps (review F05/F09); output duration/streams/resolution are now probed before publication |
 | EXIF/orientation | exiftool + OpenCV + PIL `exif_transpose` + ffmpeg `transpose` | Stored per-file (`files.rotation`, degrees CW). Current decode/rotation paths can double-apply EXIF (review F07); normalized decoder contract pending |
 | Config | pydantic-settings, `REELMAKER_*` env + `backend\.env` | `data_root`, `projects_root`, Unsloth URL/key, planner model id |
 | Dev tooling | pytest (fast suite; `-m slow` = real-model E2E), ruff, vue-tsc | Backend has **no auto-reload** — restart via scripts after Python edits |
@@ -32,7 +32,7 @@ Companion to [`status.md`](status.md) (current state) and [`implementation-plan.
 `backend/pyproject.toml` and `frontend/package.json` declare supported dependency
 ranges. `backend/uv.lock` and `frontend/package-lock.json` contain resolved versions;
 use those as the authoritative detailed inventory rather than manually updating
-every transitive package here. No dependencies were changed in this review.
+every transitive package here. Application lockfiles are unchanged; Docker adds the Linux environment.
 
 Selected lockfile versions at review time:
 
@@ -47,8 +47,7 @@ Selected lockfile versions at review time:
 Backend dependencies are divided into runtime, `dev`, and optional `ml` groups.
 `uv sync --group ml` enables local embedding support. The VLM/planner is a separately
 running OpenAI-compatible HTTP service; its model weights are not Python dependencies.
-FFmpeg, ffprobe, exiftool, Node.js/npm, uv, and the inference server are external tools;
-their installed versions are not pinned by the application lockfiles.
+Docker supplies FFmpeg, ffprobe, exiftool, fonts and Vulkan; Node builds the UI and Nginx serves it. Unsloth stays external. OS packages/base tags are not pinned by application lockfiles.
 
 ## Responsibilities and data flow
 
@@ -64,6 +63,13 @@ Vue views / TanStack Query / Pinia
 - `backend/app/api/`: request validation and orchestration; also currently owns the
   planning job handler in `plans.py`.
 - `backend/app/core/`: configuration, connections, additive migrations, registry repositories.
+- Project lifecycle: registry `archived_projects` stores removal snapshots; restore keeps
+  original IDs/storage paths. Archive/restore use dedicated connections for atomic
+  registry transactions. The single runner serializes submissions against lifecycle
+  mutations; queued/running work blocks removal. New storage slugs include a UUID.
+- Inventory: traversal/stat/root errors fail the scan before deletion reconciliation;
+  a complete inventory still reconciles intentional source deletions. Analyze uses
+  the same scan service. This does not fix source/version invalidation (F01).
 - `backend/app/pipeline/`: source inventory, analysis stages, and embedding search.
 - `backend/app/ai/`: OpenAI-compatible HTTP client and lazy SigLIP2 singleton.
 - `backend/app/planner/`: quality scoring, candidate summaries, model planning, schema
@@ -86,9 +92,13 @@ artifacts are presence-cached, with incomplete source/version invalidation today
 | `registry.db` | Projects + global jobs |
 | `Projects/<slug>/cache/db.sqlite` | Per-project files/scenes/tags/embeddings/edits |
 | `Projects/<slug>/cache/frames|thumbs` | Rep frames + scene thumbnails |
-| `Projects/<slug>/exports` | Rendered MP4s + title textfiles |
+| `Projects/<slug>/exports` | Versioned MP4s; title textfiles are temporary |
 | `models\` | YuNet face-detection ONNX (auto-download) |
 | `hf\` | HuggingFace cache (SigLIP2) |
+
+`registry.db` also stores archived project metadata. `<slug>` includes an immutable
+UUID suffix for new projects; existing legacy paths are unchanged. Archiving does
+not move files. Restore may supply a new display name when the old one is in use.
 
 ## Configuration, hosting, and boundaries
 
@@ -97,18 +107,23 @@ artifacts are presence-cached, with incomplete source/version invalidation today
   does not relocate the project root. Original media remains at the imported folder.
 - Registry stores project names/slugs, source paths, counts, and job history. Project
   databases store files, scenes, frame metrics, tags, embedding blobs, descriptions,
-  and edit plans/render state. Deleting registry entries retains runtime files unless
-  purge is requested; storage reuse needs attention (review F16).
-- API runs on loopback port 8000; Vite development server uses strict port 5173 and
-  proxies `/api`. FastAPI CORS allows the localhost/127.0.0.1 development origins.
-  The scripts launch development services; a packaged desktop installer or production
-  static frontend hosting is not implemented here.
+  and edit plans/render state. DELETE archives projects by default. Explicit purge
+  removes archived storage and job history after containment/source-overlap checks;
+  original media is preserved. Failed purges retain the archive record for diagnosis/retry.
+- Compose group `reelmaker`: FastAPI/FFmpeg/SigLIP backend and Nginx static Vue/API
+  proxy. Only loopback 5173 is published. Node 22 builds the UI; Python 3.13 and
+  uv 0.12.17 build the backend with frozen dependencies and CPU ML support.
+- Start builds/reconciles the group and waits for health. Stop releases its port;
+  Docker Desktop can manage both services. PID manifests are superseded.
+- Generated ignored `compose.override.yaml` mounts Windows data `/data`, projects
+  `/projects`, read-only media `/media/source-N`, optional host exports `/exports`.
+  Persistent roots must be mounts. `core/paths.py` translates paths without database
+  rewrites. Shared-folder browsing replaces native dialogs. See [docker.md](docker.md).
 - `.env` is read relative to the backend working directory. Provider URL/key and model
   ID are environment settings; Settings UI is read-only. Both planner and vision use
   `planner_model_id`; a separate explicit vision-model setting is absent.
-- Default inference URL is loopback. Arbitrary configured URLs are accepted, so
-  local-only inference is a deployment assumption rather than an enforced guarantee.
-  SigLIP2 weights and YuNet may download on first use. Offline readiness is not verified.
+- Default inference URL is loopback. Provider URLs are restricted to loopback and host.docker.internal HTTP(S).
+  SigLIP2 weights and YuNet may download on first use. Existing SigLIP cache loaded offline in Docker; model checksum enforcement remains pending.
 - Profiles: proxy 1280x720 at 8M, final 1920x1080 at 20M, 30 fps, H.264 video/AAC audio.
   Frontend currently requests proxy only. Music schema exists, but music mixing is
   not implemented. Face detection only informs still-photo framing, not recognition.
@@ -117,9 +132,13 @@ artifacts are presence-cached, with incomplete source/version invalidation today
 
 Run backend checks from `backend`: `uv run pytest` and `uv run ruff check .`.
 Slow real-model integration is opt-in: `uv run pytest -m slow`. Run the frontend
-type-check/build from `frontend`: `npm run build`. The reviewed baseline passed
-53 fast backend tests and the frontend build; real-model tests and live visual QA
-were not run for this review. No automated browser test suite is configured.
+type-check/build from `frontend`: `npm run build`. Final checks on 2026-10-20: 90 fast tests passed on Windows and Linux, one slow
+excluded each; Ruff passed both, frontend build passed. Docker lifecycle smoke,
+read-only media, host output/downloads, offline SigLIP and actual port release passed.
+A real cached plan rendered 35.0 seconds with NVENC. Real-frame inspection found and removed Docker HDR blocks by choosing zscale;
+three corrected HDR frames were inspected. Tone mapping appears more washed out;
+broader HDR color acceptance remains open. No audio listening, interactive browser QA or
+live Unsloth tests occurred. See [status.md](status.md) for evidence and limitations.
 
 When changing the stack, update the manifests and lockfiles, this inventory, relevant
 setup instructions, and any lessons invalidated by the change. Record actual checks,

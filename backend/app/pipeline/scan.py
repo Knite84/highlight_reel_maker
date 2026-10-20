@@ -1,5 +1,6 @@
 import asyncio
 import os
+import stat as statlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -37,9 +38,34 @@ def classify(suffix: str) -> str | None:
     return None
 
 
+class InventoryError(RuntimeError):
+    """The inventory is incomplete; existing knowledge must not be reconciled away."""
+
+
+def _root_identity(root: Path) -> tuple[int, int]:
+    try:
+        info = root.stat()
+        if not statlib.S_ISDIR(info.st_mode):
+            raise NotADirectoryError(str(root))
+    except OSError as exc:
+        raise InventoryError(
+            f"Cannot inventory media folder {root}: {exc}. "
+            "Existing indexed knowledge was preserved; reconnect/check access and retry."
+        ) from exc
+    return info.st_dev, info.st_ino
+
+
 def walk_media(root: Path) -> list[tuple[str, str, int, float]]:
+    identity = _root_identity(root)
     entries: list[tuple[str, str, int, float]] = []
-    for dirpath, dirnames, filenames in os.walk(root):
+
+    def onerror(exc: OSError) -> None:
+        raise InventoryError(
+            f"Incomplete media inventory at {exc.filename or root}: {exc}. "
+            "Existing indexed knowledge was preserved; check access and retry."
+        ) from exc
+
+    for dirpath, dirnames, filenames in os.walk(root, onerror=onerror):
         dirnames[:] = sorted(
             d for d in dirnames if not d.startswith(".") and d.lower() not in SKIP_DIRS
         )
@@ -50,9 +76,14 @@ def walk_media(root: Path) -> list[tuple[str, str, int, float]]:
                 continue
             try:
                 stat = path.stat()
-            except OSError:
-                continue
+            except OSError as exc:
+                raise InventoryError(
+                    f"Cannot inspect media file {path}: {exc}. "
+                    "Existing indexed knowledge was preserved; check access and retry."
+                ) from exc
             entries.append((path.relative_to(root).as_posix(), kind, stat.st_size, stat.st_mtime))
+    if _root_identity(root) != identity:
+        raise InventoryError("Media folder changed during inventory; preserved existing knowledge.")
     return entries
 
 
@@ -67,6 +98,8 @@ async def _remove_missing(conn: Any, seen: set[str]) -> int:
 
 async def scan_project(ctx: "JobContext", payload: dict[str, Any], conn: Any) -> dict[str, int]:
     root = Path(payload["media_path"])
+    identity = await asyncio.to_thread(_root_identity, root)
+    ctx.check_cancelled()
     entries = await asyncio.to_thread(walk_media, root)
     total = len(entries)
     await ctx.progress(done=0, total=total, message=f"Found {total} media files", force=True)
@@ -82,6 +115,9 @@ async def scan_project(ctx: "JobContext", payload: dict[str, Any], conn: Any) ->
             await ctx.progress(done=idx, force=True)
         else:
             await ctx.progress(done=idx)
+    ctx.check_cancelled()
+    if await asyncio.to_thread(_root_identity, root) != identity:
+        raise InventoryError("Media folder changed before reconciliation; preserved existing knowledge.")
     removed = await _remove_missing(conn, seen)
     await conn.commit()
     return {"videos": counts["video"], "photos": counts["photo"], "removed": removed}

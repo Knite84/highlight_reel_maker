@@ -64,7 +64,10 @@ def probe_media_sync(path: Path) -> dict:
     )
     if code != 0 or not out.strip():
         raise RuntimeError(f"ffprobe failed: {err.strip()[:300] or 'no output'}")
-    data = json.loads(out)
+    return parse_probe_data(json.loads(out))
+
+
+def parse_probe_data(data: dict) -> dict:
     streams = data.get("streams", [])
     video = next((s for s in streams if s.get("codec_type") == "video"), None)
     if video is None:

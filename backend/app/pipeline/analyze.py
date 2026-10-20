@@ -7,6 +7,7 @@ from ..ai.embeddings import MODEL_ID, Embedder, score_tags, vector_to_blob
 from ..ai.providers import LLMProvider, ProviderError, get_provider
 from ..core.config import get_settings
 from ..core.db import connect, migrate_project
+from ..jobs.worker import JobFailedWithResult
 from .describe import describe_pending_scenes
 from .frames_cv import process_photo_async, process_video_async
 from .metadata import checksum_file, extract_metadata
@@ -187,6 +188,12 @@ async def analyze_job_handler(ctx: Any, payload: dict) -> dict:
             await ctx.progress(
                 done=index + 1, message=f"[{index + 1}/{total}] {rel_path}", force=True
             )
+        if summary["errors"]:
+            details = "; ".join(entry["error"] for entry in summary["errors"][:3])
+            raise JobFailedWithResult(
+                f"Analysis incomplete: {details}. Successful cached stages were retained; "
+                "correct the problem and retry Analyze.", summary,
+            )
         return summary
     finally:
         await conn.close()
@@ -206,11 +213,6 @@ async def _describe_file_scenes(
 
 
 async def _embed_file_scenes(conn: Any, cache_dir: Path, file_id: int) -> tuple[int, bool]:
-    try:
-        embedder = Embedder.get()
-    except ImportError:
-        return 0, True
-
     cur = await conn.execute(
         "SELECT s.id, sf.path FROM scenes s "
         "JOIN scene_frames sf ON sf.scene_id = s.id AND sf.role = 'primary' "
@@ -222,6 +224,11 @@ async def _embed_file_scenes(conn: Any, cache_dir: Path, file_id: int) -> tuple[
     if not pending:
         return 0, False
 
+    try:
+        embedder = await asyncio.to_thread(Embedder.get)
+    except ImportError:
+        return 0, True
+
     paths = [str(cache_dir / row["path"]) for row in pending]
     vectors = await asyncio.to_thread(embedder.encode_images, paths)
     for row, vector in zip(pending, vectors):
@@ -230,7 +237,7 @@ async def _embed_file_scenes(conn: Any, cache_dir: Path, file_id: int) -> tuple[
             "INSERT OR REPLACE INTO embeddings(scene_id, vector, model_id) VALUES (?, ?, ?)",
             (scene_id, vector_to_blob(vector), MODEL_ID),
         )
-        for tag, tag_score in score_tags(vector):
+        for tag, tag_score in await asyncio.to_thread(score_tags, vector):
             await conn.execute(
                 "INSERT OR REPLACE INTO scene_tags(scene_id, tag, score) VALUES (?, ?, ?)",
                 (scene_id, tag, tag_score),

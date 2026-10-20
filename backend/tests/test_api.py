@@ -33,7 +33,7 @@ def test_project_create_validation(client, tmp_path):
     media.mkdir()
     response = client.post("/api/projects", json={"name": "Trip", "media_path": str(media)})
     assert response.status_code == 200
-    assert response.json()["slug"] == "trip"
+    assert response.json()["slug"].startswith("trip-")
 
     duplicate = client.post("/api/projects", json={"name": "trip", "media_path": str(media)})
     assert duplicate.status_code == 409

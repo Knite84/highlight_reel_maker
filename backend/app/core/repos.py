@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 from typing import Any
 
@@ -18,7 +19,10 @@ def _dict(row: aiosqlite.Row | None) -> dict[str, Any] | None:
 
 
 async def slug_exists(conn: aiosqlite.Connection, slug: str) -> bool:
-    cur = await conn.execute("SELECT 1 FROM projects WHERE slug = ?", (slug,))
+    cur = await conn.execute(
+        "SELECT 1 FROM projects WHERE slug=? UNION ALL "
+        "SELECT 1 FROM archived_projects WHERE slug=? LIMIT 1", (slug, slug)
+    )
     return await cur.fetchone() is not None
 
 
@@ -48,10 +52,59 @@ async def list_projects(conn: aiosqlite.Connection) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-async def delete_project(conn: aiosqlite.Connection, project_id: int) -> bool:
-    cur = await conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
-    await conn.commit()
-    return cur.rowcount > 0
+async def get_active_project_job(conn: aiosqlite.Connection, project_id: int) -> aiosqlite.Row | None:
+    cur = await conn.execute(
+        "SELECT id FROM jobs WHERE project_id=? AND status IN ('queued', 'running') LIMIT 1",
+        (project_id,),
+    )
+    return await cur.fetchone()
+
+
+async def list_archived_projects(conn: aiosqlite.Connection) -> list[dict[str, Any]]:
+    cur = await conn.execute("SELECT project_json, archived_at FROM archived_projects ORDER BY id DESC")
+    return [
+        json.loads(row["project_json"]) | {"archived_at": row["archived_at"]}
+        for row in await cur.fetchall()
+    ]
+
+
+async def get_archived_project(
+    conn: aiosqlite.Connection, project_id: int
+) -> dict[str, Any] | None:
+    cur = await conn.execute("SELECT * FROM archived_projects WHERE id=?", (project_id,))
+    row = await cur.fetchone()
+    return json.loads(row["project_json"]) if row else None
+
+
+async def archive_project(conn: aiosqlite.Connection, project: dict[str, Any]) -> None:
+    # Called with a dedicated registry connection: worker commits cannot split this transaction.
+    try:
+        await conn.execute(
+            "INSERT INTO archived_projects(id,slug,project_json) VALUES (?,?,?)",
+            (project["id"], project["slug"], json.dumps(project)),
+        )
+        await conn.execute("DELETE FROM projects WHERE id=?", (project["id"],))
+        await conn.commit()
+    except BaseException:
+        await conn.rollback()
+        raise
+
+
+async def restore_project(conn: aiosqlite.Connection, project: dict[str, Any]) -> None:
+    columns = (
+        "id", "name", "slug", "media_path", "video_count", "photo_count",
+        "scanned_at", "created_at", "updated_at",
+    )
+    try:
+        await conn.execute(
+            f"INSERT INTO projects({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
+            [project[key] for key in columns],
+        )
+        await conn.execute("DELETE FROM archived_projects WHERE id=?", (project["id"],))
+        await conn.commit()
+    except BaseException:
+        await conn.rollback()
+        raise
 
 
 async def update_project_counts(

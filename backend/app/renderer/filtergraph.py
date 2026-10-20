@@ -320,7 +320,7 @@ def build_render_args(
     photo_rotations: dict[str, int] | None = None,
     photo_focus: dict[str, tuple[float, float]] | None = None,
 ) -> tuple[list[str], float]:
-    args: list[str] = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    args: list[str] = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-progress", "pipe:1"]
     if hdr_rels and hdr_engine == "libplacebo":
         args += ["-init_hw_device", "vulkan=vk", "-filter_hw_device", "vk"]
     args.append("-y")

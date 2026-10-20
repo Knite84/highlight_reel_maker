@@ -57,6 +57,8 @@ async function refresh() {
         <dd>{{ config.data_root }}</dd>
         <dt>Projects root</dt>
         <dd>{{ config.projects_root }}</dd>
+        <dt>Rendered videos</dt>
+        <dd>{{ config.exports_root ?? 'Each project’s exports folder on the host' }}</dd>
         <dt>Unsloth URL</dt>
         <dd>{{ config.unsloth_base_url }}</dd>
         <dt>API key set</dt>
